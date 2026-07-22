@@ -32,6 +32,7 @@ class ShotPutSidebar(ctk.CTkFrame):
 
         self._build_ui()
         self._load_initial_trees()
+        self._start_drive_polling()
 
     def _handle_node_select(self, path: str):
         if path and os.path.isfile(path) and self.on_media_file_select:
@@ -212,27 +213,27 @@ class ShotPutSidebar(ctk.CTkFrame):
             menu.tk_popup(event.x_root, event.y_root)
 
     def _on_drives_right_click(self, event, item_id, path):
-        if not path or not os.path.exists(path):
-            return
-
-        name = os.path.basename(path.rstrip("/\\")) or path
-
         menu = tk.Menu(self, tearoff=0, bg=theme.CARD_BG, fg=theme.TEXT_MAIN, activebackground=theme.ACCENT_PRIMARY)
-        menu.add_command(
-            label=f"📥 Đặt làm Nguồn: {name}",
-            command=lambda p=path: self.set_source_path(p)
-        )
-        menu.add_command(
-            label=f"📤 Thêm vào Đích: {name}",
-            command=lambda p=path: self.add_destination_path(p)
-        )
-        menu.add_separator()
-        menu.add_command(label="📂 Mở trong trình duyệt file", command=lambda: self._action_open_in_explorer(path))
-        menu.add_command(label="📋 Sao chép đường dẫn", command=lambda: self._action_copy_path(path))
-        menu.add_command(label="📁 Tạo Thư mục mới...", command=lambda: self._action_new_folder(path))
-        menu.add_command(label="✏️ Đổi tên...", command=lambda: self._action_rename(path))
-        menu.add_command(label="🗑️ Xóa vĩnh viễn khỏi ổ đĩa", command=lambda: self._action_delete(path))
 
+        if path and os.path.exists(path):
+            name = os.path.basename(path.rstrip("/\\")) or path
+            menu.add_command(
+                label=f"📥 Đặt làm Nguồn: {name}",
+                command=lambda p=path: self.set_source_path(p)
+            )
+            menu.add_command(
+                label=f"📤 Thêm vào Đích: {name}",
+                command=lambda p=path: self.add_destination_path(p)
+            )
+            menu.add_separator()
+            menu.add_command(label="📂 Mở trong trình duyệt file", command=lambda: self._action_open_in_explorer(path))
+            menu.add_command(label="📋 Sao chép đường dẫn", command=lambda: self._action_copy_path(path))
+            menu.add_command(label="📁 Tạo Thư mục mới...", command=lambda: self._action_new_folder(path))
+            menu.add_command(label="✏️ Đổi tên...", command=lambda: self._action_rename(path))
+            menu.add_command(label="🗑️ Xóa vĩnh viễn khỏi ổ đĩa", command=lambda: self._action_delete(path))
+            menu.add_separator()
+
+        menu.add_command(label="🔄 Tải lại danh sách ổ đĩa", command=self._load_initial_trees)
         menu.tk_popup(event.x_root, event.y_root)
 
     # -----------------------------------------------------------------
@@ -525,25 +526,247 @@ class ShotPutSidebar(ctk.CTkFrame):
     def _load_initial_trees(self):
         """Populate All Drives tree on startup."""
         drives_list = self._detect_all_drives()
+        self._last_drives_list = drives_list
         self.tree_drives.load_drives_tree(drives_list)
 
+    def _start_drive_polling(self):
+        """Start periodic background check for connected drives."""
+        import threading
+
+        def poll():
+            def worker():
+                try:
+                    drives_list = self._detect_all_drives()
+                    self.after(0, lambda: self._update_drives_tree_if_changed(drives_list))
+                except Exception:
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+            self.after(2000, poll)
+
+        self.after(2000, poll)
+
+    def _update_drives_tree_if_changed(self, drives_list):
+        if not hasattr(self, '_last_drives_list') or self._last_drives_list != drives_list:
+            self._last_drives_list = drives_list
+            self.tree_drives.load_drives_tree(drives_list)
+
     def _detect_all_drives(self) -> list[tuple[str, str]]:
-        drives = [("Root (/)", "/")]
-        home = os.path.expanduser("~")
-        drives.append((f"Home ({os.path.basename(home)})", home))
+        import sys
+        import platform
 
-        media_dir = f"/media/{os.environ.get('USER', '')}"
-        if os.path.exists(media_dir):
-            for d in sorted(os.listdir(media_dir)):
-                full_p = os.path.join(media_dir, d)
-                if os.path.isdir(full_p):
-                    drives.append((f"Volume ({d})", full_p))
+        drives = []
+        seen_paths = set()
 
-        mnt_dir = "/mnt"
-        if os.path.exists(mnt_dir):
-            for d in sorted(os.listdir(mnt_dir)):
-                full_p = os.path.join(mnt_dir, d)
-                if os.path.isdir(full_p):
-                    drives.append((f"Mount ({d})", full_p))
+        def is_windows_cloud_drive(mountpoint: str) -> bool:
+            if sys.platform != "win32":
+                return False
+            mp_lower = mountpoint.lower()
+            if "google" in mp_lower:
+                return True
+            try:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                volume_name = ctypes.create_unicode_buffer(1024)
+                fs_name = ctypes.create_unicode_buffer(1024)
+                res = kernel32.GetVolumeInformationW(
+                    ctypes.c_wchar_p(mountpoint),
+                    volume_name,
+                    len(volume_name),
+                    None,
+                    None,
+                    None,
+                    fs_name,
+                    len(fs_name)
+                )
+                if res:
+                    v_lbl = volume_name.value.lower()
+                    f_sys = fs_name.value.lower()
+                    if "google" in v_lbl or "google" in f_sys or "dfsfuse" in f_sys or "gdrive" in f_sys:
+                        return True
+            except Exception:
+                pass
+            return False
+
+        def add_drive(label: str, path: str):
+            path = os.path.abspath(path)
+            if not os.path.exists(path):
+                return
+            if is_windows_cloud_drive(path):
+                return
+            if path in seen_paths:
+                return
+            seen_paths.add(path)
+            drives.append((label, path))
+
+        # 1. Add standard Root and Home directories
+        if sys.platform != "win32":
+            add_drive("Root (/)", "/")
+            home = os.path.expanduser("~")
+            if home:
+                add_drive(f"Home ({os.path.basename(home)})", home)
+
+        # 2. psutil detection
+        try:
+            import psutil
+        except ImportError:
+            psutil = None
+
+        if psutil:
+            try:
+                partitions = psutil.disk_partitions(all=True)
+            except Exception:
+                partitions = []
+
+            skip_prefixes = (
+                '/boot', '/srv', '/var', '/run', '/sys', '/proc', '/dev', '/tmp',
+                '/etc', '/usr', '/lib', '/opt', '/root', '/snap', '/flatpak', '/home'
+            )
+
+            for part in partitions:
+                mountpoint = part.mountpoint
+                if not mountpoint:
+                    continue
+
+                device = part.device.lower() if part.device else ""
+                fstype = part.fstype.lower() if part.fstype else ""
+
+                if sys.platform != "win32":
+                    home = os.path.expanduser("~")
+                    is_skip = False
+                    for prefix in skip_prefixes:
+                        if mountpoint == prefix or mountpoint.startswith(prefix + '/'):
+                            if home and (mountpoint == home or mountpoint.startswith(home + '/')):
+                                continue
+                            # Do not skip gvfs, kio-fuse, or run/media mountpoints
+                            if mountpoint.startswith('/run/media/') or 'kio-fuse' in mountpoint or 'gvfs' in mountpoint:
+                                continue
+                            is_skip = True
+                            break
+                    if is_skip:
+                        continue
+
+                    if fstype in ('tmpfs', 'devtmpfs', 'proc', 'sysfs', 'devpts', 'cgroup', 'cgroup2', 'bpf', 'configfs', 'debugfs', 'tracefs', 'securityfs', 'pstore', 'efivarfs', 'hugetlbfs', 'mqueue', 'fusectl', 'binfmt_misc', 'autofs'):
+                        continue
+                    if 'loop' in device:
+                        continue
+
+                # Format drive/volume label
+                if sys.platform == "win32":
+                    label = f"Drive ({mountpoint})"
+                else:
+                    name = os.path.basename(mountpoint)
+                    if not name:
+                        name = "Root"
+
+                    if "media" in mountpoint:
+                        label = f"Volume ({name})"
+                    elif "mnt" in mountpoint:
+                        label = f"Mount ({name})"
+                    elif "kio-fuse" in mountpoint or "gvfs" in mountpoint:
+                        label = f"Mobile ({name})"
+                    elif "fuse" in fstype or "rclone" in fstype or "google" in mountpoint.lower():
+                        label = f"Cloud ({name})"
+                    else:
+                        label = f"Drive ({name})"
+
+                try:
+                    if os.path.exists(mountpoint) and os.path.isdir(mountpoint):
+                        add_drive(label, mountpoint)
+                except Exception:
+                    pass
+
+        # 3. Fallback/Supplement manual scanning
+        if sys.platform == "win32":
+            import string
+            import ctypes
+            try:
+                bitmask = ctypes.cdll.kernel32.GetLogicalDrives()
+                for letter in string.ascii_uppercase:
+                    if bitmask & 1:
+                        drive_path = f"{letter}:\\"
+                        add_drive(f"Drive ({letter}:)", drive_path)
+                    bitmask >>= 1
+            except Exception:
+                for letter in string.ascii_uppercase:
+                    drive_path = f"{letter}:\\"
+                    if os.path.exists(drive_path):
+                        add_drive(f"Drive ({letter}:)", drive_path)
+        elif sys.platform == "darwin":
+            volumes_dir = "/Volumes"
+            if os.path.exists(volumes_dir):
+                try:
+                    for d in sorted(os.listdir(volumes_dir)):
+                        full_p = os.path.join(volumes_dir, d)
+                        if os.path.isdir(full_p) and not os.path.islink(full_p):
+                            add_drive(f"Volume ({d})", full_p)
+                except Exception:
+                    pass
+        else: # Linux/Unix
+            user = os.environ.get('USER', '')
+            media_dirs = []
+            if user:
+                media_dirs.append(f"/media/{user}")
+                media_dirs.append(f"/run/media/{user}")
+            media_dirs.append("/media")
+            media_dirs.append("/mnt")
+
+            for parent_dir in media_dirs:
+                if os.path.exists(parent_dir):
+                    try:
+                        for d in sorted(os.listdir(parent_dir)):
+                            full_p = os.path.join(parent_dir, d)
+                            if os.path.isdir(full_p):
+                                if user and parent_dir in (f"/media/{user}", f"/run/media/{user}"):
+                                    add_drive(f"Volume ({d})", full_p)
+                                elif parent_dir == "/mnt":
+                                    add_drive(f"Mount ({d})", full_p)
+                                else:
+                                    if user and d == user:
+                                        for sub_d in sorted(os.listdir(full_p)):
+                                            sub_p = os.path.join(full_p, sub_d)
+                                            if os.path.isdir(sub_p):
+                                                add_drive(f"Volume ({sub_d})", sub_p)
+                                    else:
+                                        add_drive(f"Volume ({d})", full_p)
+                    except Exception:
+                        pass
+
+            # 4. Scan GVfs and KIO-Fuse mount points for mobile devices/network shares
+            user_id = os.getuid() if hasattr(os, 'getuid') else 1000
+            run_user_dir = f"/run/user/{user_id}"
+            if os.path.exists(run_user_dir):
+                try:
+                    # Scan GVfs mounts
+                    gvfs_dir = os.path.join(run_user_dir, "gvfs")
+                    if os.path.exists(gvfs_dir):
+                        for d in os.listdir(gvfs_dir):
+                            full_p = os.path.join(gvfs_dir, d)
+                            if os.path.isdir(full_p):
+                                label = f"Mobile ({d})"
+                                if d.startswith("mtp:"):
+                                    import urllib.parse
+                                    friendly_name = urllib.parse.unquote(d)
+                                    if friendly_name.startswith("mtp:host="):
+                                        friendly_name = friendly_name[len("mtp:host="):]
+                                    label = f"Mobile ({friendly_name})"
+                                add_drive(label, full_p)
+                except Exception:
+                    pass
+
+                try:
+                    # Scan kio-fuse mounts
+                    for item in os.listdir(run_user_dir):
+                        if item.startswith("kio-fuse-"):
+                            kio_root = os.path.join(run_user_dir, item)
+                            mtp_dir = os.path.join(kio_root, "mtp")
+                            if os.path.exists(mtp_dir):
+                                for device in os.listdir(mtp_dir):
+                                    device_path = os.path.join(mtp_dir, device)
+                                    if os.path.isdir(device_path):
+                                        friendly_name = device.replace("_", " ")
+                                        add_drive(f"Mobile ({friendly_name})", device_path)
+                except Exception:
+                    pass
 
         return drives
