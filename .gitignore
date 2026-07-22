@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+build/
+dist/
+DIT_Copy_Pro_Portable/
+.pytest_cache/
+.DS_Store
+
+# Test media and output data
+tests/input*/
+tests/output*/
+tests/.dit_copy_session.json
+tests/DIT_Report_*.txt
+*.mp4
+*.MP4
+*.mov
+*.MOV

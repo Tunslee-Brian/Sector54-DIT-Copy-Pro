@@ -1,0 +1,10 @@
+{
+  "name": "Sector54 Studio Format",
+  "description": "",
+  "naming_rule": "{Camera:1}{Roll:3}{Clip:3}_{Date:YYMMDD}",
+  "folder_template": "{Destination}/{Camera}/{Roll}/",
+  "date_format": "YYMMDD",
+  "hash_algorithm": "XXHash64",
+  "log_format": "TXT",
+  "buffer_size_mb": 128
+}

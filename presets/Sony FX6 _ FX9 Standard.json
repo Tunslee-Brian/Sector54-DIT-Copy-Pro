@@ -1,0 +1,10 @@
+{
+  "name": "Sony FX6 / FX9 Standard",
+  "description": "",
+  "naming_rule": "{Camera:1}{Roll:3}C{Clip:3}",
+  "folder_template": "{Destination}/Footage/{Camera}/Roll_{Roll}/",
+  "date_format": "YYMMDD",
+  "hash_algorithm": "MD5",
+  "log_format": "TXT",
+  "buffer_size_mb": 32
+}
