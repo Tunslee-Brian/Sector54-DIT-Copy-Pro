@@ -49,6 +49,13 @@ def get_media_category(filepath: str) -> str:
     return "FILE"
 
 
+def _get_subprocess_kwargs():
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kwargs
+
+
 class InAppVideoDecoder:
     """
     Background video decoder pipeline using ffmpeg rawvideo pipe.
@@ -90,7 +97,7 @@ class InAppVideoDecoder:
             "-"
         ]
         try:
-            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_get_subprocess_kwargs())
         except Exception:
             return
 
@@ -558,30 +565,46 @@ class MediaPreviewWidget(ctk.CTkFrame):
 
     def _init_audio_duration(self):
         self._audio_duration = 0.0
-        try:
-            cmd = [
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                self.filepath
-            ]
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
-            if res.returncode == 0 and res.stdout.strip():
-                self._audio_duration = float(res.stdout.strip())
-        except Exception:
-            pass
+        target_filepath = self.filepath
 
-        if self._audio_duration <= 0 and self._has_mixer():
+        def _worker():
+            dur = 0.0
             try:
-                if not pygame.mixer.get_init():
-                    pygame.mixer.init()
-                sound = pygame.mixer.Sound(self.filepath)
-                self._audio_duration = sound.get_length()
+                cmd = [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    target_filepath
+                ]
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3, **_get_subprocess_kwargs())
+                if res.returncode == 0 and res.stdout.strip():
+                    dur = float(res.stdout.strip())
             except Exception:
                 pass
 
-        if hasattr(self, "lbl_audio_time") and self.lbl_audio_time.winfo_exists():
-            self.lbl_audio_time.configure(text=f"00:00 / {self._format_seconds(self._audio_duration)}")
+            if dur <= 0 and self._has_mixer():
+                try:
+                    if not pygame.mixer.get_init():
+                        pygame.mixer.init()
+                    sound = pygame.mixer.Sound(target_filepath)
+                    dur = sound.get_length()
+                except Exception:
+                    pass
+
+            def _apply():
+                if getattr(self, "filepath", "") != target_filepath:
+                    return
+                self._audio_duration = dur
+                if hasattr(self, "lbl_audio_time") and self.lbl_audio_time.winfo_exists():
+                    self.lbl_audio_time.configure(text=f"00:00 / {self._format_seconds(self._audio_duration)}")
+
+            if hasattr(self, "after"):
+                try:
+                    self.after(0, _apply)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _toggle_audio_playback(self):
         if self._is_playing_audio:
@@ -631,7 +654,7 @@ class MediaPreviewWidget(ctk.CTkFrame):
             return
         cmd = ["ffplay", "-nodisp", "-autoexit", "-ss", str(start_sec), self.filepath]
         try:
-            self.audio_ffplay_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.audio_ffplay_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **_get_subprocess_kwargs())
         except Exception:
             self.audio_ffplay_proc = None
 
@@ -897,79 +920,107 @@ class MediaPreviewWidget(ctk.CTkFrame):
         self._video_fps = 24.0
         self._video_orig_w = 1920
         self._video_orig_h = 1080
-        res_str = "N/A"
-        codec_str = "N/A"
-        fps_str = "N/A"
 
-        try:
-            cmd = [
-                "ffprobe",
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height,r_frame_rate,codec_name:format=duration",
-                "-of", "default=noprint_wrappers=1",
-                self.filepath
-            ]
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3)
-            if res.returncode == 0:
-                lines = res.stdout.strip().split("\n")
-                probe_data = {}
-                for line in lines:
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        probe_data[k.strip()] = v.strip()
+        target_filepath = self.filepath
 
-                w = probe_data.get("width", "")
-                h = probe_data.get("height", "")
-                if w and h:
-                    self._video_orig_w = int(w)
-                    self._video_orig_h = int(h)
-                    res_str = f"{w} × {h} px"
+        def _worker():
+            v_duration = 0.0
+            v_fps = 24.0
+            v_orig_w = 1920
+            v_orig_h = 1080
+            res_str = "N/A"
+            codec_str = "N/A"
+            fps_str = "N/A"
+            poster_pil = None
 
-                codec_str = probe_data.get("codec_name", "Unknown").upper()
-                fps_eval = probe_data.get("r_frame_rate", "")
-                if "/" in fps_eval:
-                    num, den = map(float, fps_eval.split("/"))
-                    if den > 0:
-                        self._video_fps = num / den
-                        fps_str = f"{self._video_fps:.2f} fps"
+            try:
+                cmd = [
+                    "ffprobe",
+                    "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries", "stream=width,height,r_frame_rate,codec_name:format=duration",
+                    "-of", "default=noprint_wrappers=1",
+                    target_filepath
+                ]
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3, **_get_subprocess_kwargs())
+                if res.returncode == 0:
+                    lines = res.stdout.strip().split("\n")
+                    probe_data = {}
+                    for line in lines:
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            probe_data[k.strip()] = v.strip()
 
-                dur = probe_data.get("duration", "")
-                if dur:
-                    self._video_duration = float(dur)
-        except Exception:
-            pass
+                    w = probe_data.get("width", "")
+                    h = probe_data.get("height", "")
+                    if w and h:
+                        v_orig_w = int(w)
+                        v_orig_h = int(h)
+                        res_str = f"{w} × {h} px"
 
-        specs_text = (
-            f"• Đơn vị tệp: {os.path.basename(self.filepath)}\n\n"
-            f"• Thời lượng: {self._format_seconds(self._video_duration)}\n\n"
-            f"• Độ phân giải: {res_str}\n\n"
-            f"• Chuẩn nén (Codec): {codec_str}\n\n"
-            f"• Tốc độ khung hình: {fps_str}\n\n"
-            f"• Đường dẫn tệp:\n  {self.filepath}"
-        )
-        if hasattr(self, "lbl_video_specs") and self.lbl_video_specs.winfo_exists():
-            self.lbl_video_specs.configure(text=specs_text)
+                    codec_str = probe_data.get("codec_name", "Unknown").upper()
+                    fps_eval = probe_data.get("r_frame_rate", "")
+                    if "/" in fps_eval:
+                        num, den = map(float, fps_eval.split("/"))
+                        if den > 0:
+                            v_fps = num / den
+                            fps_str = f"{v_fps:.2f} fps"
 
-        if hasattr(self, "lbl_video_time") and self.lbl_video_time.winfo_exists():
-            self.lbl_video_time.configure(text=f"00:00 / {self._format_seconds(self._video_duration)}")
+                    dur = probe_data.get("duration", "")
+                    if dur:
+                        v_duration = float(dur)
+            except Exception:
+                pass
 
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
-                tmp_thumb_path = tmp_file.name
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
+                    tmp_thumb_path = tmp_file.name
 
-            cmd_thumb = [
-                "ffmpeg", "-y", "-ss", "00:00:00", "-i", self.filepath,
-                "-vframes", "1", "-vf", "scale=1280:-1", tmp_thumb_path
-            ]
-            subprocess.run(cmd_thumb, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=4)
-            if os.path.exists(tmp_thumb_path) and os.path.getsize(tmp_thumb_path) > 0:
-                self._poster_pil_image = Image.open(tmp_thumb_path)
-                self._render_poster_image()
-                self.after(120, self._render_poster_image)
-                os.remove(tmp_thumb_path)
-        except Exception:
-            pass
+                cmd_thumb = [
+                    "ffmpeg", "-y", "-ss", "00:00:00", "-i", target_filepath,
+                    "-vframes", "1", "-vf", "scale=1280:-1", tmp_thumb_path
+                ]
+                subprocess.run(cmd_thumb, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=4, **_get_subprocess_kwargs())
+                if os.path.exists(tmp_thumb_path) and os.path.getsize(tmp_thumb_path) > 0:
+                    with Image.open(tmp_thumb_path) as img:
+                        poster_pil = img.copy()
+                    os.remove(tmp_thumb_path)
+            except Exception:
+                pass
+
+            def _apply():
+                if getattr(self, "filepath", "") != target_filepath:
+                    return
+                self._video_duration = v_duration
+                self._video_fps = v_fps
+                self._video_orig_w = v_orig_w
+                self._video_orig_h = v_orig_h
+
+                specs_text = (
+                    f"• Đơn vị tệp: {os.path.basename(target_filepath)}\n\n"
+                    f"• Thời lượng: {self._format_seconds(v_duration)}\n\n"
+                    f"• Độ phân giải: {res_str}\n\n"
+                    f"• Chuẩn nén (Codec): {codec_str}\n\n"
+                    f"• Tốc độ khung hình: {fps_str}\n\n"
+                    f"• Đường dẫn tệp:\n  {target_filepath}"
+                )
+                if hasattr(self, "lbl_video_specs") and self.lbl_video_specs.winfo_exists():
+                    self.lbl_video_specs.configure(text=specs_text)
+
+                if hasattr(self, "lbl_video_time") and self.lbl_video_time.winfo_exists():
+                    self.lbl_video_time.configure(text=f"00:00 / {self._format_seconds(v_duration)}")
+
+                if poster_pil:
+                    self._poster_pil_image = poster_pil
+                    self._render_poster_image()
+
+            if hasattr(self, "after"):
+                try:
+                    self.after(0, _apply)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _toggle_video_playback(self):
         if self._is_playing_video:
@@ -991,7 +1042,8 @@ class MediaPreviewWidget(ctk.CTkFrame):
             self.video_audio_proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
+                **_get_subprocess_kwargs()
             )
         except Exception:
             self.video_audio_proc = None

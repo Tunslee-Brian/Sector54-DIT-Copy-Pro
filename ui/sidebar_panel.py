@@ -105,9 +105,10 @@ class ShotPutSidebar(ctk.CTkFrame):
         drives_tv.bind("<ButtonRelease-1>", self._on_drag_release, add="+")
 
         # Bind sash movement & window resize events to clamp collapsed pane sizes
-        self.vpaned.bind("<B1-Motion>", self._clamp_sashes, add="+")
-        self.vpaned.bind("<ButtonRelease-1>", self._clamp_sashes, add="+")
-        self.bind("<Configure>", lambda e: self.after(20, self._clamp_sashes), add="+")
+        self._clamp_timer_id = None
+        self.vpaned.bind("<B1-Motion>", self._on_sash_motion, add="+")
+        self.vpaned.bind("<ButtonRelease-1>", self._on_sash_release, add="+")
+        self.bind("<Configure>", self._on_sidebar_configure, add="+")
 
     # -----------------------------------------------------------------
     # Drag & Drop Handlers
@@ -437,8 +438,34 @@ class ShotPutSidebar(ctk.CTkFrame):
     def _handle_section_toggled(self):
         self.after(10, self._rebalance_sections)
 
+    def _on_sash_motion(self, event=None):
+        if self._clamp_timer_id is not None:
+            try:
+                self.after_cancel(self._clamp_timer_id)
+            except Exception:
+                pass
+        self._clamp_timer_id = self.after(30, self._clamp_sashes)
+
+    def _on_sash_release(self, event=None):
+        if self._clamp_timer_id is not None:
+            try:
+                self.after_cancel(self._clamp_timer_id)
+                self._clamp_timer_id = None
+            except Exception:
+                pass
+        self._clamp_sashes()
+
+    def _on_sidebar_configure(self, event=None):
+        if self._clamp_timer_id is not None:
+            try:
+                self.after_cancel(self._clamp_timer_id)
+            except Exception:
+                pass
+        self._clamp_timer_id = self.after(40, self._clamp_sashes)
+
     def _clamp_sashes(self, event=None):
         """Clamp sash positions so collapsed sections stay fixed at header height (~30px) without black gaps or overlaps."""
+        self._clamp_timer_id = None
         total_h = self.vpaned.winfo_height()
         if total_h < 100:
             return
@@ -446,10 +473,13 @@ class ShotPutSidebar(ctk.CTkFrame):
         HEADER_H = 30.0
 
         try:
-            y0 = float(self.vpaned.sashpos(0))
-            y1 = float(self.vpaned.sashpos(1))
+            y0_curr = float(self.vpaned.sashpos(0))
+            y1_curr = float(self.vpaned.sashpos(1))
         except Exception:
             return
+
+        y0 = y0_curr
+        y1 = y1_curr
 
         sec0_open = self.sec_input.is_open
         sec1_open = self.sec_output.is_open
@@ -483,14 +513,15 @@ class ShotPutSidebar(ctk.CTkFrame):
                 y0 = y1 - HEADER_H
 
         try:
-            self.vpaned.sashpos(0, int(y0))
-            self.vpaned.sashpos(1, int(y1))
+            if abs(y0 - y0_curr) >= 2.0:
+                self.vpaned.sashpos(0, int(y0))
+            if abs(y1 - y1_curr) >= 2.0:
+                self.vpaned.sashpos(1, int(y1))
         except Exception:
             pass
 
     def _rebalance_sections(self):
         """Dynamically synchronize section collapse/expand with PanedWindow sash splitters."""
-        self.update_idletasks()
         sections = [self.sec_input, self.sec_output, self.sec_drives]
 
         total_h = self.vpaned.winfo_height()

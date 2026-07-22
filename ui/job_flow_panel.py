@@ -16,15 +16,41 @@ class JobFlowPanel(ctk.CTkFrame):
 
         self.source_path = ""
         self.destinations = []
+        self._resize_timer_id = None
 
         self._init_host_info()
         self._build_ui()
-        self.bind("<Configure>", lambda e: self.after(10, self.draw_flow))
+        self.bind("<Configure>", self._on_configure)
+
+    def _on_configure(self, event=None):
+        if self._resize_timer_id is not None:
+            try:
+                self.after_cancel(self._resize_timer_id)
+            except Exception:
+                pass
+        self._resize_timer_id = self.after(35, self._draw_flow_debounced)
+
+    def _draw_flow_debounced(self):
+        self._resize_timer_id = None
+        self.draw_flow()
 
     def _init_host_info(self):
         """Retrieve host machine hardware/OS specs dynamically."""
         self.host_name = platform.node() or "Local Workstation"
-        self.sys_info = f"{platform.system()} {platform.release()}"
+        
+        system = platform.system()
+        release = platform.release()
+        if system == "Windows" and release == "10":
+            try:
+                import sys
+                if hasattr(sys, "getwindowsversion"):
+                    win_ver = sys.getwindowsversion()
+                    if win_ver.build >= 22000:
+                        release = "11"
+            except Exception:
+                pass
+                
+        self.sys_info = f"{system} {release}"
         self.cpu_cores = os.cpu_count() or 4
         
         # Try retrieving RAM size if available

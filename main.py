@@ -7,6 +7,19 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 def main():
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            except Exception:
+                try:
+                    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+                except Exception:
+                    ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
     try:
         from ui.app import DITCopyProApp
         app = DITCopyProApp()
