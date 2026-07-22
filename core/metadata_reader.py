@@ -29,7 +29,10 @@ class MetadataReader:
                     "-of", "default=noprint_wrappers=1:nokey=1",
                     filepath
                 ]
-                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2)
+                kwargs = {}
+                if sys.platform == "win32":
+                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2, **kwargs)
                 if res.returncode == 0 and res.stdout.strip():
                     raw_time = res.stdout.strip().split("\n")[0].replace("Z", "")
                     dt = datetime.fromisoformat(raw_time)

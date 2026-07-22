@@ -48,7 +48,10 @@ class SoundPlayer:
 
                 if cmd:
                     try:
-                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                        kwargs = {}
+                        if sys.platform == "win32":
+                            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, **kwargs)
                     except Exception:
                         cmd = None
 

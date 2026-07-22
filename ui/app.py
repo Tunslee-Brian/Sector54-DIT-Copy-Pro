@@ -37,7 +37,7 @@ class DITCopyProApp(ctk.CTk):
         super().__init__()
 
         # Setup Window
-        self.title("Sector54 DIT Copy Pro — Software Sao Chép & Xác Thực Điện Ảnh (ShotPut Edition)")
+        self.title("Sector54 DIT Copy Pro")
         self.geometry("1280x880")
         self.minsize(1024, 720)
         ctk.set_appearance_mode("dark")

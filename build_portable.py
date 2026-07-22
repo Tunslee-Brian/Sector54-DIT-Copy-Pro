@@ -12,6 +12,13 @@ import subprocess
 
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+
     print("=" * 80)
     print("📦 DIT COPY PRO — AUTOMATED PORTABLE APP BUILDER")
     print("=" * 80)
@@ -36,10 +43,11 @@ def main():
         print("   $ pip install pyinstaller")
         return
 
-    # PyInstaller Build Command
+    # PyInstaller Build Command (--onedir for instant startup performance)
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--onefile",
+        "-y",
+        "--onedir",
         "--name", "DIT_Copy_Pro",
         "--clean",
         "--collect-all", "customtkinter",
@@ -48,9 +56,9 @@ def main():
         "main.py"
     ]
     if is_win:
-        cmd.insert(4, "--noconsole")
+        cmd.insert(5, "--noconsole")
 
-    print("\n🔨 Đang tiến hành biên dịch ứng dụng với PyInstaller...")
+    print("\n🔨 Đang tiến hành biên dịch ứng dụng với PyInstaller (Chế độ Fast Onedir)...")
     print(f"   Lệnh: {' '.join(cmd)}")
     
     res = subprocess.run(cmd)
@@ -59,7 +67,7 @@ def main():
         return
 
     # Create Standalone Portable Folder
-    dist_dir = os.path.join(project_root, "dist")
+    dist_dir = os.path.join(project_root, "dist", "DIT_Copy_Pro")
     built_exe = os.path.join(dist_dir, exe_name)
 
     if not os.path.exists(built_exe):
@@ -67,13 +75,32 @@ def main():
         return
 
     portable_folder = os.path.join(project_root, "DIT_Copy_Pro_Portable")
-    if os.path.exists(portable_folder):
-        shutil.rmtree(portable_folder)
-    os.makedirs(portable_folder, exist_ok=True)
+    def remove_readonly(func, path, exc_info):
+        import stat
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except Exception:
+            pass
 
-    # Copy Executable to Portable Folder
-    dest_exe = os.path.join(portable_folder, exe_name)
-    shutil.copy2(built_exe, dest_exe)
+    if is_win:
+        subprocess.run(["taskkill", "/F", "/IM", exe_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        import time
+        time.sleep(0.5)
+
+    if os.path.exists(portable_folder):
+        try:
+            shutil.rmtree(portable_folder, onerror=remove_readonly)
+        except Exception:
+            pass
+    
+    # Copy entire build directory (instant startup, zero extraction lag)
+    try:
+        shutil.copytree(dist_dir, portable_folder, dirs_exist_ok=True)
+    except Exception as e:
+        print(f"\n❌ Không thể ghi đè thư mục Portable do file đang mở: {e}")
+        print("👉 Vui lòng đóng DIT_Copy_Pro.exe đang chạy rồi thử lại.")
+        return
 
     # Copy finish.mp3 to Portable Folder
     src_mp3 = os.path.join(project_root, "finish.mp3")
@@ -86,11 +113,12 @@ def main():
         shutil.copytree(src_presets, os.path.join(portable_folder, "presets"), dirs_exist_ok=True)
 
     print("\n" + "=" * 80)
-    print("🎉 TẠO THƯ MỤC PORTABLE THÀNH CÔNG!")
+    print("🎉 TẠO THƯ MỤC PORTABLE THÀNH CÔNG (FAST STARTUP VERSION)!")
     print("=" * 80)
     print(f"📁 Đường dẫn Portable Folder: {portable_folder}")
     print("📂 Cấu trúc danh mục Portable đã hoàn thiện:")
     print(f"   ├── 📄 {exe_name}")
+    print("   ├── 📁 _internal/ (Thư viện khởi động tức thì)")
     print("   ├── 🎵 finish.mp3")
     print("   └── 📁 presets/")
 
