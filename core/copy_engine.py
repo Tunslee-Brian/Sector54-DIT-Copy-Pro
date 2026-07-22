@@ -63,6 +63,7 @@ class CopyEngine:
         self.cancel_requested = False
         self.is_running = False
         self._progress_lock = threading.Lock()
+        self._session_cache: Optional[Dict] = None
 
         self.file_list: List[Dict] = []
         self.extra_files: List[Dict] = []
@@ -70,6 +71,35 @@ class CopyEngine:
         self.copied_bytes = 0
         self.start_time = 0.0
         self.end_time = 0.0
+
+    def check_free_space(self) -> Dict[str, Dict]:
+        """
+        Checks available free disk space on each destination root against total_bytes.
+        Returns a dict mapping dest_root -> {"free_bytes": int, "required_bytes": int, "sufficient": bool}.
+        """
+        import shutil
+        result = {}
+        for dest in self.destinations:
+            try:
+                check_path = dest
+                while check_path and not os.path.exists(check_path):
+                    parent = os.path.dirname(check_path)
+                    if parent == check_path:
+                        break
+                    check_path = parent
+                if not check_path or not os.path.exists(check_path):
+                    check_path = "/"
+                usage = shutil.disk_usage(check_path)
+                free = usage.free
+            except Exception:
+                free = -1
+            sufficient = (free >= self.total_bytes) if free >= 0 else True
+            result[dest] = {
+                "free_bytes": free,
+                "required_bytes": self.total_bytes,
+                "sufficient": sufficient
+            }
+        return result
 
     def scan_source(self) -> List[Dict]:
         """
@@ -302,6 +332,8 @@ class CopyEngine:
         failed_count = 0
 
         is_size_only = (self.hash_algorithm.upper() == "SIZE-ONLY")
+        num_dests = len(self.destinations) if self.destinations else 1
+        total_work_bytes = self.total_bytes * (1 if is_size_only else (1 + num_dests))
 
         for file_info in self.file_list:
             if self.cancel_requested:
@@ -345,15 +377,16 @@ class CopyEngine:
                         current_speed = bytes_since_last_calc / dt
                         last_calc_time = now
                         bytes_since_last_calc = 0
-                    remaining_bytes = max(0, self.total_bytes - self.copied_bytes)
+                    remaining_bytes = max(0, total_work_bytes - self.copied_bytes)
                     eta = remaining_bytes / current_speed if current_speed > 0 else 0.0
                     eff_speed = current_speed
                 if on_file_progress:
-                    on_file_progress(file_info, self.copied_bytes, eff_speed, eta)
+                    on_file_progress(file_info, min(self.total_bytes, self.copied_bytes), eff_speed, eta)
 
             def dst_verify_callback(chunk_len):
                 nonlocal last_calc_time, bytes_since_last_calc, current_speed
                 with self._progress_lock:
+                    self.copied_bytes += chunk_len
                     bytes_since_last_calc += chunk_len
                     now = time.time()
                     dt = now - last_calc_time
@@ -361,11 +394,11 @@ class CopyEngine:
                         current_speed = bytes_since_last_calc / dt
                         last_calc_time = now
                         bytes_since_last_calc = 0
-                    remaining_bytes = max(0, self.total_bytes - self.copied_bytes)
+                    remaining_bytes = max(0, total_work_bytes - self.copied_bytes)
                     eta = remaining_bytes / current_speed if current_speed > 0 else 0.0
                     eff_speed = current_speed
                 if on_file_progress:
-                    on_file_progress(file_info, self.copied_bytes, eff_speed, eta)
+                    on_file_progress(file_info, min(self.total_bytes, self.copied_bytes), eff_speed, eta)
 
             if is_size_only:
                 source_hash = str(file_size)
@@ -422,7 +455,8 @@ class CopyEngine:
 
         self.scan_extra_destination_files()
         elapsed = max(0.1, self.end_time - self.start_time)
-        avg_speed = self.copied_bytes / elapsed
+        avg_speed = self.total_bytes / elapsed
+        self.copied_bytes = self.total_bytes
 
         summary = {
             "total_files": len(self.file_list),
@@ -431,7 +465,7 @@ class CopyEngine:
             "extra_files": self.extra_files,
             "extra_count": len(self.extra_files),
             "total_bytes": self.total_bytes,
-            "copied_bytes": self.copied_bytes,
+            "copied_bytes": self.total_bytes,
             "elapsed_seconds": elapsed,
             "avg_speed_bytes_sec": avg_speed,
             "cancelled": self.cancel_requested,
@@ -479,18 +513,36 @@ class CopyEngine:
 
             # Producer Thread for Async Reading from Source Card
             chunk_queue = queue.Queue(maxsize=16)
+            reader_thread = None
 
             def reader_worker():
                 try:
                     while not self.cancel_requested:
                         chunk = src_file.read(self.buffer_size)
                         if not chunk:
-                            chunk_queue.put(None)
+                            while not self.cancel_requested:
+                                try:
+                                    chunk_queue.put(None, timeout=0.1)
+                                    break
+                                except queue.Full:
+                                    pass
                             break
                         _advise_dontneed(src_file.fileno())
-                        chunk_queue.put(chunk)
+                        put_success = False
+                        while not self.cancel_requested:
+                            try:
+                                chunk_queue.put(chunk, timeout=0.1)
+                                put_success = True
+                                break
+                            except queue.Full:
+                                pass
+                        if not put_success:
+                            break
                 except Exception as ex:
-                    chunk_queue.put(ex)
+                    try:
+                        chunk_queue.put(ex, timeout=0.1)
+                    except Exception:
+                        pass
 
             reader_thread = threading.Thread(target=reader_worker, daemon=True)
             reader_thread.start()
@@ -500,7 +552,11 @@ class CopyEngine:
                     file_info["error_msg"] = "User cancelled process"
                     break
 
-                item = chunk_queue.get()
+                try:
+                    item = chunk_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+
                 if item is None:
                     break
                 if isinstance(item, Exception):
@@ -536,18 +592,30 @@ class CopyEngine:
                 if on_file_progress:
                     on_file_progress(file_info, file_bytes_read, current_speed, eta_seconds)
 
-            reader_thread.join(timeout=5.0)
-
         except Exception as e:
             file_info["error_msg"] = str(e)
             self._cleanup_partial_files(dest_paths)
             return False
         finally:
+            if self.cancel_requested:
+                try:
+                    while not chunk_queue.empty():
+                        chunk_queue.get_nowait()
+                except Exception:
+                    pass
+            if reader_thread and reader_thread.is_alive():
+                reader_thread.join(timeout=1.0)
             if src_file and not src_file.closed:
-                src_file.close()
+                try:
+                    src_file.close()
+                except Exception:
+                    pass
             for dst_f in dest_files:
                 if not dst_f.closed:
-                    dst_f.close()
+                    try:
+                        dst_f.close()
+                    except Exception:
+                        pass
 
         if self.cancel_requested:
             self._cleanup_partial_files(dest_paths)
@@ -627,13 +695,17 @@ class CopyEngine:
         self.cancel_requested = True
 
     def _load_session_state(self) -> Dict:
+        if self._session_cache is not None:
+            return self._session_cache
         if self.session_file and os.path.exists(self.session_file):
             try:
                 with open(self.session_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    self._session_cache = json.load(f)
+                    return self._session_cache
             except Exception:
                 pass
-        return {}
+        self._session_cache = {}
+        return self._session_cache
 
     def _save_file_session_state(self, file_info: Dict):
         if not self.session_file:
@@ -641,14 +713,15 @@ class CopyEngine:
         try:
             session_dir = os.path.dirname(os.path.abspath(self.session_file))
             os.makedirs(session_dir, exist_ok=True)
-            state = self._load_session_state()
-            state[file_info["rel_path"]] = {
+            if self._session_cache is None:
+                self._session_cache = self._load_session_state()
+            self._session_cache[file_info["rel_path"]] = {
                 "status": file_info["status"],
                 "source_hash": file_info["source_hash"],
                 "dest_hashes": file_info["dest_hashes"],
                 "shot_time": file_info["shot_time"]
             }
             with open(self.session_file, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
+                json.dump(self._session_cache, f, indent=2)
         except Exception:
             pass

@@ -4,6 +4,7 @@ import customtkinter as ctk
 import os
 import time
 import threading
+import webbrowser
 from typing import Optional
 
 import ui.theme as theme
@@ -27,7 +28,7 @@ from core.sound_player import SoundPlayer
 
 class DITCopyProApp(ctk.CTk):
     """
-    Main Application GUI for DIT Copy Pro — ShotPut Pro Edition.
+    Main Application GUI for Sector54 DIT Copy Pro — ShotPut Pro Edition.
     Features dark slate cinematography aesthetic, resizable sidebar splitter,
     visual Job Flow canvas, dual-phase progress cards, and dedicated tabs.
     """
@@ -36,7 +37,7 @@ class DITCopyProApp(ctk.CTk):
         super().__init__()
 
         # Setup Window
-        self.title("DIT COPY PRO — Software Sao Chép & Xác Thực Điện Ảnh (ShotPut Edition)")
+        self.title("Sector54 DIT Copy Pro — Software Sao Chép & Xác Thực Điện Ảnh (ShotPut Edition)")
         self.geometry("1280x880")
         self.minsize(1024, 720)
         ctk.set_appearance_mode("dark")
@@ -113,14 +114,35 @@ class DITCopyProApp(ctk.CTk):
         header_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
         header_frame.grid_columnconfigure(1, weight=1)
 
-        # App Logo & Title
+        # App Logo & Title & Author Credit
+        logo_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        logo_frame.grid(row=0, column=0, sticky="w", padx=(15, 10), pady=10)
+
         logo_lbl = ctk.CTkLabel(
-            header_frame,
-            text="🎬 DIT COPY PRO",
+            logo_frame,
+            text="🎬 Sector54 DIT Copy Pro",
             font=(theme.FONT_FAMILY, 16, "bold"),
             text_color=theme.TEXT_MAIN
         )
-        logo_lbl.grid(row=0, column=0, sticky="w", padx=(15, 10), pady=10)
+        logo_lbl.pack(side="left", padx=(0, 10))
+
+        credit_lbl = ctk.CTkLabel(
+            logo_frame,
+            text="| Made by ",
+            font=(theme.FONT_FAMILY, 13),
+            text_color=theme.TEXT_MUTED
+        )
+        credit_lbl.pack(side="left")
+
+        author_link = ctk.CTkLabel(
+            logo_frame,
+            text="Tuns",
+            font=(theme.FONT_FAMILY, 13, "bold"),
+            text_color=theme.ACCENT_PRIMARY,
+            cursor="hand2"
+        )
+        author_link.pack(side="left")
+        author_link.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/Tunslee-Brian"))
 
         # Top Right Actions & Buttons
         actions_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
@@ -340,13 +362,6 @@ class DITCopyProApp(ctk.CTk):
             self._show_feedback("Vui lòng chọn ít nhất 1 thư mục đích!", theme.ACCENT_DANGER)
             return
 
-        self.is_copying = True
-        self._has_played_sound = False
-
-        self.btn_start.configure(state="disabled", fg_color=theme.CARD_BG)
-        self.btn_verify_only.configure(state="disabled", fg_color=theme.CARD_BG)
-        self.btn_cancel.configure(state="normal", fg_color=theme.ACCENT_DANGER, hover_color=theme.ACCENT_DANGER_HOVER, text_color="#ffffff")
-
         token_parser = TokenParser(config["naming_rule"], date_format=config.get("date_format", "YYMMDD"))
         dir_builder = DirectoryBuilder(config["folder_template"])
 
@@ -360,6 +375,29 @@ class DITCopyProApp(ctk.CTk):
         )
 
         file_list = self.current_copy_engine.scan_source()
+
+        # Pre-check free disk space on all destination drives
+        space_info = self.current_copy_engine.check_free_space()
+        insufficient_dests = [d for d, info in space_info.items() if not info["sufficient"]]
+        if insufficient_dests:
+            from tkinter import messagebox
+            req_str = ReportGenerator.format_size(self.current_copy_engine.total_bytes)
+            msg = f"CẢNH BÁO: Dung lượng còn trống không đủ để chứa dữ liệu nguồn ({req_str}):\n\n"
+            for d in insufficient_dests:
+                free_b = space_info[d]["free_bytes"]
+                free_str = ReportGenerator.format_size(free_b) if free_b >= 0 else "N/A"
+                msg += f" • {d}: Còn trống {free_str}\n"
+            msg += "\nBạn có chắc chắn vẫn muốn tiếp tục sao chép không?"
+            if not messagebox.askyesno("Cảnh Báo Dung Lượng Ổ Đĩa", msg, icon="warning"):
+                return
+
+        self.is_copying = True
+        self._has_played_sound = False
+
+        self.btn_start.configure(state="disabled", fg_color=theme.CARD_BG)
+        self.btn_verify_only.configure(state="disabled", fg_color=theme.CARD_BG)
+        self.btn_cancel.configure(state="normal", fg_color=theme.ACCENT_DANGER, hover_color=theme.ACCENT_DANGER_HOVER, text_color="#ffffff")
+
         self.file_table.populate_files(file_list)
 
         job_name = os.path.basename(src.rstrip("/\\")) or src
@@ -417,14 +455,9 @@ class DITCopyProApp(ctk.CTk):
 
         def on_file_start(file_info):
             self.after(0, lambda: self.file_table.update_file_status(file_info))
-            if self.current_copy_engine:
-                self.after(0, lambda: self.sidebar.update_sidebar_tree_status(
-                    self.current_copy_engine.file_list,
-                    getattr(self.current_copy_engine, "extra_files", []),
-                    expand_output=True
-                ))
 
         last_ui_update_time = 0.0
+        last_tree_update_time = 0.0
 
         def on_file_progress(file_info, file_bytes_read, speed, eta):
             nonlocal last_ui_update_time
@@ -446,6 +479,7 @@ class DITCopyProApp(ctk.CTk):
                     ))
 
         def on_file_complete(file_info):
+            nonlocal last_tree_update_time
             self.after(0, lambda: self.file_table.update_file_status(file_info))
             if self.current_copy_engine:
                 self.after(0, lambda: self.progress_panel.update_total_progress(
@@ -454,11 +488,14 @@ class DITCopyProApp(ctk.CTk):
                     sum(1 for f in self.current_copy_engine.file_list if f["status"] == "VERIFIED"),
                     len(self.current_copy_engine.file_list)
                 ))
-                self.after(0, lambda: self.sidebar.update_sidebar_tree_status(
-                    self.current_copy_engine.file_list,
-                    getattr(self.current_copy_engine, "extra_files", []),
-                    expand_output=True
-                ))
+                now = time.time()
+                if now - last_tree_update_time >= 0.3:
+                    last_tree_update_time = now
+                    self.after(0, lambda: self.sidebar.update_sidebar_tree_status(
+                        self.current_copy_engine.file_list,
+                        getattr(self.current_copy_engine, "extra_files", []),
+                        expand_output=True
+                    ))
 
         def on_session_complete(summary):
             self.after(0, lambda: self._handle_session_complete(summary))
@@ -504,12 +541,15 @@ class DITCopyProApp(ctk.CTk):
             return
         self._has_played_sound = True
 
-        # Generate TXT Report
+        # Generate TXT & HTML Reports
         src = self.sidebar.get_source_path()
         dests = self.sidebar.get_destinations()
         config = self.config_panel.get_config()
 
-        report_path = os.path.join(dests[0], f"DIT_Report_{os.path.basename(src.rstrip('/\\\\'))}.txt")
+        card_name = os.path.basename(src.rstrip('/\\\\')) or "Card"
+        txt_report_path = os.path.join(dests[0], f"DIT_Report_{card_name}.txt")
+        html_report_path = os.path.join(dests[0], f"DIT_Report_{card_name}.html")
+
         ReportGenerator.generate_txt_report(
             project_name="Film Project",
             preset_name=config.get("name", "Custom Preset"),
@@ -518,7 +558,17 @@ class DITCopyProApp(ctk.CTk):
             hash_algorithm=config["hash_algorithm"],
             file_list=self.current_copy_engine.file_list,
             summary=summary,
-            output_filepath=report_path
+            output_filepath=txt_report_path
+        )
+        ReportGenerator.generate_html_report(
+            project_name="Film Project",
+            preset_name=config.get("name", "Custom Preset"),
+            source_dir=src,
+            destinations=dests,
+            hash_algorithm=config["hash_algorithm"],
+            file_list=self.current_copy_engine.file_list,
+            summary=summary,
+            output_filepath=html_report_path
         )
 
         # Populate extra files in file table if present

@@ -1,7 +1,7 @@
 {
   "name": "Sector54 Studio Format",
   "description": "",
-  "naming_rule": "{Camera:1}{Roll:3}{Clip:3}_{Date:YYMMDD}",
+  "naming_rule": "{Camera:1}{Roll:3}{Clip:3}",
   "folder_template": "{Destination}/{Camera}/{Roll}/",
   "date_format": "YYMMDD",
   "hash_algorithm": "XXHash64",

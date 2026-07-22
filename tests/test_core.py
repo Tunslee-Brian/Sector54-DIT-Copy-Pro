@@ -260,9 +260,127 @@ class TestCore(unittest.TestCase):
             shutil.rmtree(dest1)
             shutil.rmtree(dest2)
 
+    def test_check_free_space(self):
+        src_dir = tempfile.mkdtemp()
+        dest1 = tempfile.mkdtemp()
+
+        f1 = os.path.join(src_dir, "A001C005_25072026.MXF")
+        with open(f1, "wb") as f:
+            f.write(b"Test content 123")
+
+        try:
+            parser = TokenParser("{Camera:1}{Roll:3}C{Clip:3}_{Date:8}")
+            builder = DirectoryBuilder("{Destination}/Footage/{Camera}/Roll_{Roll}/")
+
+            engine = CopyEngine(
+                source_dir=src_dir,
+                destinations=[dest1],
+                token_parser=parser,
+                directory_builder=builder,
+                hash_algorithm="MD5",
+                buffer_size_mb=1
+            )
+            engine.scan_source()
+            space_info = engine.check_free_space()
+
+            self.assertIn(dest1, space_info)
+            self.assertGreaterEqual(space_info[dest1]["free_bytes"], 0)
+            self.assertTrue(space_info[dest1]["sufficient"])
+        finally:
+            shutil.rmtree(src_dir)
+            shutil.rmtree(dest1)
+
+    def test_generate_html_report(self):
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
+        tmp.close()
+
+        file_list = [
+            {
+                "filename": "A001C001_25072026.MXF",
+                "size": 1024,
+                "shot_time": "2026-07-22 12:00:00",
+                "source_hash": "d41d8cd98f00b204e9800998ecf8427e",
+                "status": "VERIFIED"
+            }
+        ]
+        summary = {
+            "total_files": 1,
+            "verified": 1,
+            "failed": 0,
+            "extra_files": [],
+            "total_bytes": 1024,
+            "elapsed_seconds": 1.5,
+            "avg_speed_bytes_sec": 1024
+        }
+
+        try:
+            html = ReportGenerator.generate_html_report(
+                project_name="Test Project",
+                preset_name="ARRI ALEXA Standard",
+                source_dir="/tmp/source",
+                destinations=["/tmp/dest1"],
+                hash_algorithm="MD5",
+                file_list=file_list,
+                summary=summary,
+                output_filepath=tmp.name
+            )
+
+            self.assertIn("DIT COPY REPORT", html)
+            self.assertIn("A001C001_25072026.MXF", html)
+            self.assertIn("PASSED 100%", html)
+            self.assertTrue(os.path.exists(tmp.name))
+        finally:
+            if os.path.exists(tmp.name):
+                os.remove(tmp.name)
+
+    def test_generate_txt_report(self):
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+        tmp.close()
+
+        file_list = [
+            {
+                "filename": "A001C001_25072026.MXF",
+                "size": 1024,
+                "shot_time": "2026-07-22 12:00:00",
+                "source_hash": "d41d8cd98f00b204e9800998ecf8427e",
+                "status": "VERIFIED"
+            }
+        ]
+        summary = {
+            "total_files": 1,
+            "verified": 1,
+            "failed": 0,
+            "extra_files": [],
+            "total_bytes": 1024,
+            "elapsed_seconds": 1.5,
+            "avg_speed_bytes_sec": 1024
+        }
+
+        try:
+            txt = ReportGenerator.generate_txt_report(
+                project_name="Test Project",
+                preset_name="ARRI ALEXA Standard",
+                source_dir="/tmp/source",
+                destinations=["/tmp/dest1"],
+                hash_algorithm="MD5",
+                file_list=file_list,
+                summary=summary,
+                output_filepath=tmp.name
+            )
+
+            self.assertIn("DIT COPY REPORT", txt)
+            self.assertIn("A001C001_25072026.MXF", txt)
+            self.assertIn("Summary", txt)
+            self.assertTrue(os.path.exists(tmp.name))
+        finally:
+            if os.path.exists(tmp.name):
+                os.remove(tmp.name)
+
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

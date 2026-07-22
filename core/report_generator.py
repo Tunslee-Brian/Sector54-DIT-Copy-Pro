@@ -133,8 +133,6 @@ class ReportGenerator:
         lines.append("===========================================================================")
 
         content = "\n".join(lines)
-
-        # Write to output file if path provided
         if output_filepath:
             output_dir = os.path.dirname(os.path.abspath(output_filepath))
             if output_dir:
@@ -143,3 +141,282 @@ class ReportGenerator:
                 f.write(content)
 
         return content
+
+
+    @classmethod
+    def generate_html_report(
+        cls,
+        project_name: str,
+        preset_name: str,
+        source_dir: str,
+        destinations: List[str],
+        hash_algorithm: str,
+        file_list: List[Dict],
+        summary: Dict,
+        output_filepath: str
+    ) -> str:
+        """
+        Creates a print-ready, responsive HTML DIT Copy Report and returns HTML string.
+        """
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        extra_files = summary.get("extra_files", [])
+        total_files = summary.get("total_files", len(file_list))
+        verified_count = summary.get("verified", 0)
+        failed_count = summary.get("failed", 0)
+        total_size_str = cls.format_size(summary.get("total_bytes", 0))
+        elapsed_str = cls.format_time(summary.get("elapsed_seconds", 0))
+        speed_str = cls.format_size(int(summary.get("avg_speed_bytes_sec", 0)))
+
+        status_class = "status-pass" if failed_count == 0 else "status-fail"
+        status_banner = "PASSED 100%" if failed_count == 0 else "FAILED / CHECKSUM MISMATCH"
+
+        rows_html = []
+        for f in file_list:
+            fname = f.get("filename", "")
+            fsize = cls.format_size(f.get("size", 0))
+            stime = f.get("shot_time", "N/A")
+            shash = f.get("source_hash", "N/A")
+            status = f.get("status", "QUEUED")
+
+            badge_cls = "badge-pass" if status == "VERIFIED" else "badge-fail" if status == "FAILED" else "badge-warn"
+            badge_text = "VERIFIED ✓" if status == "VERIFIED" else "FAILED ✗" if status == "FAILED" else status
+
+            rows_html.append(f"""
+            <tr>
+                <td><code>{fname}</code></td>
+                <td>{fsize}</td>
+                <td>{stime}</td>
+                <td><code class="hash">{shash}</code></td>
+                <td><span class="badge {badge_cls}">{badge_text}</span></td>
+            </tr>
+            """)
+
+        extra_rows_html = []
+        for ef in extra_files:
+            ef_name = ef.get("filename", "")
+            ef_size = cls.format_size(ef.get("size", 0))
+            ef_path = ef.get("dest_path", "")
+            extra_rows_html.append(f"""
+            <tr>
+                <td><code>{ef_name}</code></td>
+                <td>{ef_size}</td>
+                <td><code>{ef_path}</code></td>
+            </tr>
+            """)
+
+        dest_list_html = "".join([f"<li><code>{d}</code></li>" for d in destinations])
+
+        html_content = f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DIT Copy Report — {project_name}</title>
+    <style>
+        :root {{
+            --bg-dark: #0f111a;
+            --panel-bg: #181b28;
+            --card-bg: #212538;
+            --text-main: #f0f2f5;
+            --text-muted: #8c95a6;
+            --accent-blue: #3b82f6;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-yellow: #f59e0b;
+            --border-color: #2d3348;
+        }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 32px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }}
+        .header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 20px;
+            margin-bottom: 24px;
+        }}
+        .header h1 {{
+            margin: 0;
+            font-size: 24px;
+            letter-spacing: 0.5px;
+            color: #ffffff;
+        }}
+        .status-banner {{
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 14px;
+            letter-spacing: 1px;
+        }}
+        .status-pass {{ background-color: rgba(16, 185, 129, 0.15); color: var(--accent-green); border: 1px solid var(--accent-green); }}
+        .status-fail {{ background-color: rgba(239, 68, 68, 0.15); color: var(--accent-red); border: 1px solid var(--accent-red); }}
+        
+        .metrics-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }}
+        .metric-card {{
+            background: var(--card-bg);
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }}
+        .metric-card .label {{ font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; }}
+        .metric-card .value {{ font-size: 20px; font-weight: bold; color: var(--text-main); }}
+
+        .info-section {{
+            margin-bottom: 28px;
+            font-size: 14px;
+            line-height: 1.6;
+        }}
+        .info-section code {{
+            background: var(--card-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #60a5fa;
+            font-family: monospace;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+            font-size: 13px;
+        }}
+        th, td {{
+            text-align: left;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border-color);
+        }}
+        th {{
+            background: var(--card-bg);
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+        }}
+        code.hash {{ font-family: monospace; font-size: 12px; color: #a7f3d0; }}
+
+        .badge {{
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+        }}
+        .badge-pass {{ background: rgba(16, 185, 129, 0.2); color: var(--accent-green); }}
+        .badge-fail {{ background: rgba(239, 68, 68, 0.2); color: var(--accent-red); }}
+        .badge-warn {{ background: rgba(245, 158, 11, 0.2); color: var(--accent-yellow); }}
+
+        @media print {{
+            body {{ background: #ffffff; color: #000000; padding: 0; }}
+            .container {{ border: none; box-shadow: none; padding: 0; background: #ffffff; color: #000000; }}
+            th {{ background: #f0f0f0; color: #000000; }}
+            td {{ border-bottom: 1px solid #ddd; color: #000000; }}
+            code {{ background: #f5f5f5; color: #000000; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>🎬 DIT COPY REPORT</h1>
+                <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Dự án: <strong>{project_name}</strong> | Preset: <strong>{preset_name}</strong></div>
+            </div>
+            <div class="status-banner {status_class}">{status_banner}</div>
+        </div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="label">Tổng số Tệp</div>
+                <div class="value">{total_files}</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Đã Xác Thực</div>
+                <div class="value" style="color: var(--accent-green);">{verified_count}</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Lỗi Checksum</div>
+                <div class="value" style="color: var(--accent-red);">{failed_count}</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Tổng Dung Lượng</div>
+                <div class="value">{total_size_str}</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Thời Gian & Tốc Độ</div>
+                <div class="value" style="font-size: 16px;">{elapsed_str} (~{speed_str}/s)</div>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <div><strong>Thời gian báo cáo:</strong> {now_str}</div>
+            <div><strong>Thuật toán Checksum:</strong> <code>{hash_algorithm}</code></div>
+            <div><strong>Thẻ Nguồn (Source):</strong> <code>{source_dir}</code></div>
+            <div><strong>Các Thư Mục Đích (Destinations):</strong></div>
+            <ul style="margin: 4px 0 0 20px; padding: 0;">
+                {dest_list_html}
+            </ul>
+        </div>
+
+        <h2>📄 Danh Sách File Đã Kiểm Tra</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Tên Tập Tin</th>
+                    <th>Kích Thước</th>
+                    <th>Thời Gian Shot</th>
+                    <th>Source Hash</th>
+                    <th>Trạng Thái</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(rows_html)}
+            </tbody>
+        </table>
+
+        {f'''
+        <h2 style="margin-top: 36px; color: var(--accent-yellow);">⚠️ File Thừa ở Ổ Đích (Extra / Orphan Files)</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Tên Tập Tin</th>
+                    <th>Kích Thước</th>
+                    <th>Đường Dẫn Đích</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(extra_rows_html)}
+            </tbody>
+        </table>
+        ''' if extra_files else ''}
+    </div>
+</body>
+</html>
+"""
+        if output_filepath:
+            output_dir = os.path.dirname(os.path.abspath(output_filepath))
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            with open(output_filepath, "w", encoding="utf-8") as f:
+                f.write(html_content)
+
+        return html_content
+

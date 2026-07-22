@@ -42,6 +42,7 @@ def main():
         "--onefile",
         "--name", "DIT_Copy_Pro",
         "--clean",
+        "--collect-all", "customtkinter",
         f"--add-data=finish.mp3{separator}.",
         f"--add-data=presets{separator}presets",
         "main.py"

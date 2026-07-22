@@ -1238,7 +1238,7 @@ class ConfigPanel(ctk.CTkFrame):
             if imported and "name" in imported:
                 self.current_loaded_preset_name = imported["name"]
                 self._load_presets_to_combo(select_name=imported["name"])
-                self._load_preset_to_ui(imported)
+                self.apply_preset(imported)
 
     def _on_export_preset_clicked(self):
         """Export current preset to an external JSON file."""
