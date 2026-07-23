@@ -1,4 +1,5 @@
 import os
+import re
 
 class DirectoryBuilder:
     """
@@ -11,10 +12,19 @@ class DirectoryBuilder:
 
     def build_path_for_destination(self, destination_root: str, tokens: dict, filename: str) -> str:
         """
-        Builds full destination file path for a single destination root.
+        Builds full destination file path for a single destination root with path traversal protections.
         """
-        context = dict(tokens)
-        context["Destination"] = destination_root.rstrip("/\\")
+        dest_clean = os.path.realpath(destination_root)
+
+        # Sanitize token values to prevent path traversal via token injection
+        context = {}
+        for key, value in tokens.items():
+            val_str = str(value)
+            # Replace any sequence of 2 or more dots with a single underscore to block all variations of ..
+            val_str = re.sub(r'\.{2,}', '_', val_str)
+            val_str = val_str.replace("/", "_").replace("\\", "_")
+            context[key] = val_str
+        context["Destination"] = dest_clean.rstrip("/\\")
 
         # Format template
         rel_or_abs = self.template
@@ -23,9 +33,23 @@ class DirectoryBuilder:
             rel_or_abs = rel_or_abs.replace(token_placeholder, str(value))
 
         # Clean trailing slashes and normalize path
+        safe_filename = os.path.basename(filename)
         target_dir = os.path.normpath(rel_or_abs)
-        target_filepath = os.path.join(target_dir, filename)
-        return target_filepath
+        target_filepath = os.path.normpath(os.path.join(target_dir, safe_filename))
+        abs_target = os.path.realpath(target_filepath)
+
+        # Validate that the target file path resides strictly inside destination_root
+        try:
+            dest_norm = os.path.normcase(dest_clean)
+            target_norm = os.path.normcase(abs_target)
+            if os.path.commonpath([dest_norm, target_norm]) != dest_norm:
+                raise ValueError(f"Path traversal attempt detected: {abs_target} is outside {dest_clean}")
+        except Exception as e:
+            if isinstance(e, ValueError):
+                raise e
+            raise ValueError(f"Invalid path traversal: {abs_target}")
+
+        return abs_target
 
     def build_paths_for_all_destinations(self, destinations: list[str], tokens: dict, filename: str) -> list[str]:
         """

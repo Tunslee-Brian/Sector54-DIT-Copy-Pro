@@ -1,10 +1,13 @@
 {
   "name": "Sector54 Studio Format",
   "description": "",
+  "project_name": "Film Project",
   "naming_rule": "{Camera:1}{Roll:3}{Clip:3}",
   "folder_template": "{Destination}/{Camera}/{Roll}/",
-  "date_format": "YYMMDD",
+  "date_format": "DDMMYY",
   "hash_algorithm": "XXHash64",
   "log_format": "TXT",
-  "buffer_size_mb": 128
+  "buffer_size_mb": 128,
+  "file_extension_blacklist": [],
+  "suppress_output_reports": false
 }

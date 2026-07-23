@@ -43,6 +43,15 @@ class DITCopyProApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         self.configure(fg_color=theme.BG_DARK)
 
+        # Initialize Drag & Drop
+        try:
+            from tkinterdnd2 import TkinterDnD
+            TkinterDnD.require(self)
+            self.dnd_enabled = True
+        except Exception as e:
+            print(f"⚠️ Warning: Could not initialize tkinterdnd2: {e}")
+            self.dnd_enabled = False
+
         # Core Managers & Engines
         self.preset_manager = PresetManager()
         self.sound_player = SoundPlayer()
@@ -143,6 +152,18 @@ class DITCopyProApp(ctk.CTk):
         )
         author_link.pack(side="left")
         author_link.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/Tunslee-Brian"))
+
+        # Middle Speed/Status Badge
+        self.lbl_speed_badge = ctk.CTkLabel(
+            header_frame,
+            text=" 0.0 MB/s ",
+            font=(theme.FONT_FAMILY, 12, "bold"),
+            fg_color=theme.ACCENT_PRIMARY,
+            text_color="#FFFFFF",
+            corner_radius=6,
+            height=28
+        )
+        self.lbl_speed_badge.grid(row=0, column=1, sticky="e", padx=(10, 15), pady=10)
 
         # Top Right Actions & Buttons
         actions_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
@@ -338,7 +359,9 @@ class DITCopyProApp(ctk.CTk):
             token_parser=token_parser,
             directory_builder=dir_builder,
             hash_algorithm=config["hash_algorithm"],
-            buffer_size_mb=config["buffer_size_mb"]
+            buffer_size_mb=config["buffer_size_mb"],
+            file_extension_blacklist=config.get("file_extension_blacklist", []),
+            suppress_output_reports=config.get("suppress_output_reports", False)
         )
 
         file_list = engine.scan_source()
@@ -371,7 +394,9 @@ class DITCopyProApp(ctk.CTk):
             token_parser=token_parser,
             directory_builder=dir_builder,
             hash_algorithm=config["hash_algorithm"],
-            buffer_size_mb=config["buffer_size_mb"]
+            buffer_size_mb=config["buffer_size_mb"],
+            file_extension_blacklist=config.get("file_extension_blacklist", []),
+            suppress_output_reports=config.get("suppress_output_reports", False)
         )
 
         file_list = self.current_copy_engine.scan_source()
@@ -437,7 +462,9 @@ class DITCopyProApp(ctk.CTk):
             token_parser=token_parser,
             directory_builder=dir_builder,
             hash_algorithm=config["hash_algorithm"],
-            buffer_size_mb=config["buffer_size_mb"]
+            buffer_size_mb=config["buffer_size_mb"],
+            file_extension_blacklist=config.get("file_extension_blacklist", []),
+            suppress_output_reports=config.get("suppress_output_reports", False)
         )
 
         file_list = self.current_copy_engine.scan_source()
@@ -469,6 +496,9 @@ class DITCopyProApp(ctk.CTk):
                 self.after(0, lambda fn=fname, fr=file_bytes_read, fs=fsize, sp=speed, et=eta: self.progress_panel.update_file_progress(
                     fn, fr, fs, sp, et
                 ))
+                if hasattr(self, "lbl_speed_badge") and self.lbl_speed_badge:
+                    sp_str = f" {speed / 1024:.2f} GB/s " if speed >= 1024 else f" {speed:.1f} MB/s "
+                    self.after(0, lambda txt=sp_str: self.lbl_speed_badge.configure(text=txt, fg_color=theme.ACCENT_PRIMARY))
                 if self.current_copy_engine:
                     cb = self.current_copy_engine.copied_bytes
                     tb = self.current_copy_engine.total_bytes
@@ -546,30 +576,31 @@ class DITCopyProApp(ctk.CTk):
         dests = self.sidebar.get_destinations()
         config = self.config_panel.get_config()
 
-        card_name = os.path.basename(src.rstrip('/\\\\')) or "Card"
-        txt_report_path = os.path.join(dests[0], f"DIT_Report_{card_name}.txt")
-        html_report_path = os.path.join(dests[0], f"DIT_Report_{card_name}.html")
+        if not config.get("suppress_output_reports", False):
+            card_name = os.path.basename(src.rstrip('/\\\\')) or "Card"
+            txt_report_path = os.path.join(dests[0], f"DIT_Report_{card_name}.txt")
+            html_report_path = os.path.join(dests[0], f"DIT_Report_{card_name}.html")
 
-        ReportGenerator.generate_txt_report(
-            project_name="Film Project",
-            preset_name=config.get("name", "Custom Preset"),
-            source_dir=src,
-            destinations=dests,
-            hash_algorithm=config["hash_algorithm"],
-            file_list=self.current_copy_engine.file_list,
-            summary=summary,
-            output_filepath=txt_report_path
-        )
-        ReportGenerator.generate_html_report(
-            project_name="Film Project",
-            preset_name=config.get("name", "Custom Preset"),
-            source_dir=src,
-            destinations=dests,
-            hash_algorithm=config["hash_algorithm"],
-            file_list=self.current_copy_engine.file_list,
-            summary=summary,
-            output_filepath=html_report_path
-        )
+            ReportGenerator.generate_txt_report(
+                project_name=config.get("project_name", "Film Project"),
+                preset_name=config.get("name", "Custom Preset"),
+                source_dir=src,
+                destinations=dests,
+                hash_algorithm=config["hash_algorithm"],
+                file_list=self.current_copy_engine.file_list,
+                summary=summary,
+                output_filepath=txt_report_path
+            )
+            ReportGenerator.generate_html_report(
+                project_name=config.get("project_name", "Film Project"),
+                preset_name=config.get("name", "Custom Preset"),
+                source_dir=src,
+                destinations=dests,
+                hash_algorithm=config["hash_algorithm"],
+                file_list=self.current_copy_engine.file_list,
+                summary=summary,
+                output_filepath=html_report_path
+            )
 
         # Populate extra files in file table if present
         extra_files = summary.get("extra_files", [])

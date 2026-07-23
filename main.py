@@ -20,6 +20,21 @@ def main():
         except Exception:
             pass
 
+    # Monkey-patch CustomTkinter string widget scrolling crash (common on Python 3.14/Tkinter)
+    try:
+        import customtkinter as ctk
+        orig_check_scroll = ctk.CTkScrollableFrame._check_if_valid_scroll
+        def patched_check_scroll(self, widget):
+            if isinstance(widget, str):
+                try:
+                    widget = self.nametowidget(widget)
+                except Exception:
+                    return False
+            return orig_check_scroll(self, widget)
+        ctk.CTkScrollableFrame._check_if_valid_scroll = patched_check_scroll
+    except Exception:
+        pass
+
     try:
         from ui.app import DITCopyProApp
         app = DITCopyProApp()

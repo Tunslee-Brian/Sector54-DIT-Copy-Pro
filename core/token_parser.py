@@ -42,6 +42,7 @@ class TokenParser:
         self.rule_pattern = rule_pattern
         self.date_format = date_format
         self.regex, self.token_names = self._build_regex(rule_pattern)
+        self.relaxed_regex = self._build_relaxed_regex(rule_pattern)
 
     def _build_regex(self, pattern: str):
         token_names = []
@@ -86,11 +87,53 @@ class TokenParser:
 
         return compiled_regex, token_names
 
+    def _build_relaxed_regex(self, pattern: str):
+        last_pos = 0
+        regex_parts = ["^"]
+
+        for match in self.TOKEN_REGEX.finditer(pattern):
+            start, end = match.span()
+            # Make static text between tokens optional
+            if start > last_pos:
+                static_text = pattern[last_pos:start]
+                regex_parts.append(f"(?:{re.escape(static_text)})?")
+
+            token_name = match.group(1)
+            length_str = match.group(2)
+
+            if length_str:
+                if length_str.isdigit():
+                    length = int(length_str)
+                    regex_parts.append(f"(?P<{token_name}>.{{{length}}})")
+                elif token_name == "Date":
+                    sample_d = format_date(datetime.now(), length_str)
+                    regex_parts.append(f"(?P<{token_name}>.{{{len(sample_d)}}})")
+                else:
+                    regex_parts.append(f"(?P<{token_name}>[A-Za-z0-9_\\-]+)")
+            else:
+                regex_parts.append(f"(?P<{token_name}>[A-Za-z0-9_\\-]+)")
+
+            last_pos = end
+
+        if last_pos < len(pattern):
+            regex_parts.append(f"(?:{re.escape(pattern[last_pos:])})?")
+
+        # Allow any trailing characters before the optional extension
+        regex_parts.append(r"(?:.*?)(?:\.[A-Za-z0-9]+)?$")
+
+        try:
+            compiled_regex = re.compile("".join(regex_parts), re.IGNORECASE)
+        except re.error:
+            compiled_regex = re.compile(r"^(?P<Clip>.+?)(?:\.[A-Za-z0-9]+)?$", re.IGNORECASE)
+
+        return compiled_regex
+
     def set_pattern(self, rule_pattern: str, date_format: str = None):
         self.rule_pattern = rule_pattern
         if date_format:
             self.date_format = date_format
         self.regex, self.token_names = self._build_regex(rule_pattern)
+        self.relaxed_regex = self._build_relaxed_regex(rule_pattern)
 
     def parse(self, filename: str, fallback_project: str = "Project", dt: datetime = None) -> dict:
         """
@@ -100,7 +143,12 @@ class TokenParser:
         basename = os.path.basename(filename)
         name_without_ext, ext = os.path.splitext(basename)
 
+        # 1. Try strict match
         match = self.regex.match(basename) or self.regex.match(name_without_ext)
+        
+        # 2. Fall back to relaxed match if strict fails
+        if not match and hasattr(self, "relaxed_regex"):
+            match = self.relaxed_regex.match(basename) or self.relaxed_regex.match(name_without_ext)
 
         result = {
             "Camera": "A",
@@ -118,6 +166,23 @@ class TokenParser:
             for key, val in group_dict.items():
                 if val is not None:
                     result[key] = val
+            
+            # Run heuristic fallback if Camera or Roll were not extracted by regex
+            if "Camera" not in group_dict or group_dict["Camera"] is None:
+                h_match = re.match(r"^([A-Za-z])(\d{3})", name_without_ext)
+                if h_match:
+                    result["Camera"] = h_match.group(1).upper()
+            if "Roll" not in group_dict or group_dict["Roll"] is None:
+                h_match = re.match(r"^([A-Za-z])(\d{3})", name_without_ext)
+                if h_match:
+                    result["Roll"] = h_match.group(2)
+        else:
+            # 3. Heuristic fallback for standard Camera Letter + 3-digit Roll filenames (e.g. A005004 -> Camera A, Roll 005)
+            h_match = re.match(r"^([A-Za-z])(\d{3})", name_without_ext)
+            if h_match:
+                result["Camera"] = h_match.group(1).upper()
+                result["Roll"] = h_match.group(2)
 
         return result
+
 

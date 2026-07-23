@@ -11,11 +11,12 @@ class TreePreviewWidget(ctk.CTkFrame):
     Displays directories and files with icons (📁, 🎬, 📄, 💽) and supports lazy folder expansion.
     """
 
-    def __init__(self, master, height_rows: int = 5, on_node_select_callback=None, on_right_click_callback=None, **kwargs):
+    def __init__(self, master, height_rows: int = 5, on_node_select_callback=None, on_right_click_callback=None, on_discard_callback=None, **kwargs):
         super().__init__(master, fg_color="transparent", corner_radius=0, **kwargs)
 
         self.on_node_select = on_node_select_callback
         self.on_right_click_callback = on_right_click_callback
+        self.on_discard_callback = on_discard_callback
         self.height_rows = height_rows
         self._current_status_dict = {}
 
@@ -82,6 +83,9 @@ class TreePreviewWidget(ctk.CTkFrame):
         self.tree.bind("<ButtonRelease-1>", self._on_tree_click)
         self.tree.bind("<Button-3>", self._on_right_click)
         self.tree.bind("<Button-2>", self._on_right_click)
+        self.tree.bind("<ButtonPress-1>", self._on_tree_press, add="+")
+        self.tree.bind("<Motion>", self._on_tree_motion)
+        self.tree.bind("<Configure>", self._on_tree_resize)
 
     def clear(self):
         for item in self.tree.get_children():
@@ -95,8 +99,22 @@ class TreePreviewWidget(ctk.CTkFrame):
             return
 
         root_name = os.path.basename(root_path.rstrip("/\\")) or root_path
-        node_id = self.tree.insert("", "end", text=f"📁 {root_name}", open=True, values=[root_path])
-        self._populate_subnodes(node_id, root_path)
+        is_dir = os.path.isdir(root_path)
+        if is_dir:
+            icon = "📁"
+        else:
+            ext = os.path.splitext(root_name)[1].lower()
+            if ext in (".mxf", ".mov", ".mp4", ".ari", ".r3d", ".braw", ".arw", ".cr3"):
+                icon = "🎬"
+            elif ext in (".jpg", ".png", ".tif", ".dng"):
+                icon = "🖼"
+            else:
+                icon = "📄"
+
+        node_id = self.tree.insert("", "end", text=f"{icon} {root_name}", open=True, values=[root_path])
+        if is_dir:
+            self._populate_subnodes(node_id, root_path)
+        self._on_tree_resize()
 
     def load_multiple_paths_tree(self, paths: list[str], placeholder: str = "  (Kéo thả thư mục Đích vào đây)"):
         """Populate tree for multiple paths (e.g. Destinations) and auto-open them."""
@@ -108,8 +126,21 @@ class TreePreviewWidget(ctk.CTkFrame):
         for p in paths:
             if p and os.path.exists(p):
                 name = os.path.basename(p.rstrip("/\\")) or p
-                node_id = self.tree.insert("", "end", text=f"💽 {name}", open=True, values=[p])
-                self._populate_subnodes(node_id, p)
+                is_dir = os.path.isdir(p)
+                if is_dir:
+                    icon = "💽"
+                else:
+                    ext = os.path.splitext(name)[1].lower()
+                    if ext in (".mxf", ".mov", ".mp4", ".ari", ".r3d", ".braw", ".arw", ".cr3"):
+                        icon = "🎬"
+                    elif ext in (".jpg", ".png", ".tif", ".dng"):
+                        icon = "🖼"
+                    else:
+                        icon = "📄"
+                node_id = self.tree.insert("", "end", text=f"{icon} {name}", open=True, values=[p])
+                if is_dir:
+                    self._populate_subnodes(node_id, p)
+        self._on_tree_resize()
 
     def load_drives_tree(self, drive_list: list[tuple[str, str]]):
         """Populate list of system drives."""
@@ -305,14 +336,14 @@ class TreePreviewWidget(ctk.CTkFrame):
 
         for root_item in self.tree.get_children():
             recurse(root_item)
+        self._on_tree_resize()
 
     def update_node_statuses(self, status_dict: dict[str, str]):
         """
         status_dict maps normpath -> "COPYING", "VERIFIED", "FAILED", "MISSING", "EXTRA"
         Highlights nodes in Cyan (copying), Red (failed/missing), Yellow (extra), or Green (verified).
         """
-        if status_dict:
-            self._current_status_dict.update(status_dict)
+        self._current_status_dict = dict(status_dict) if status_dict else {}
 
         def recurse(item_id) -> str:
             vals = self.tree.item(item_id, "values")
@@ -346,6 +377,8 @@ class TreePreviewWidget(ctk.CTkFrame):
                 self.tree.item(item_id, tags=("extra",))
             elif node_status == "VERIFIED":
                 self.tree.item(item_id, tags=("verified",))
+            else:
+                self.tree.item(item_id, tags=())
 
             return node_status
 
@@ -427,5 +460,93 @@ class TreePreviewWidget(ctk.CTkFrame):
                 root_path = vals[0]
                 if os.path.exists(root_path) and os.path.isdir(root_path):
                     update_folder_children(root_item, root_path)
+
+    def _is_click_on_discard_icon(self, event, item_id) -> bool:
+        if not item_id or self.tree.parent(item_id) != "":
+            return False
+        text = self.tree.item(item_id, "text")
+        if "✕" not in text:
+            return False
+            
+        W = self.tree.winfo_width()
+        click_x = event.x
+        # Hitbox: rightmost 45 pixels of the tree widget
+        return (W - 45) <= click_x <= (W - 10)
+
+    def _on_tree_press(self, event):
+        item_id = self.tree.identify_row(event.y)
+        if item_id:
+            if self._is_click_on_discard_icon(event, item_id):
+                if self.on_discard_callback:
+                    vals = self.tree.item(item_id, "values")
+                    if vals and len(vals) > 0:
+                        path = vals[0]
+                        self.on_discard_callback(path)
+                        return "break"
+
+    def _on_tree_motion(self, event):
+        item_id = self.tree.identify_row(event.y)
+        if item_id and self._is_click_on_discard_icon(event, item_id):
+            self.tree.config(cursor="hand2")
+        else:
+            self.tree.config(cursor="")
+
+    def _on_tree_resize(self, event=None):
+        self.update_idletasks()
+        W = self.tree.winfo_width()
+        if W < 50:
+            return
+            
+        import tkinter.font as tkfont
+        style = ttk.Style()
+        font_conf = style.lookup("VSCode.Treeview", "font")
+        if font_conf:
+            f = tkfont.Font(font=font_conf)
+        else:
+            f = tkfont.Font(family=theme.FONT_FAMILY, size=9)
+            
+        w_space = f.measure(" ")
+        if w_space <= 0:
+            w_space = 4
+            
+        for item_id in self.tree.get_children():
+            vals = self.tree.item(item_id, "values")
+            if not vals or len(vals) == 0 or not vals[0]:
+                continue
+                
+            text = self.tree.item(item_id, "text")
+            if "✕" in text:
+                parts = text.split("✕")
+                base_text = parts[0].rstrip()
+            else:
+                base_text = text
+                
+            if not self.on_discard_callback:
+                if text != base_text:
+                    self.tree.item(item_id, text=base_text)
+                continue
+                
+            # Measure base text width using the font
+            w_base = f.measure(base_text)
+            
+            bbox = self.tree.bbox(item_id, "#0")
+            if bbox:
+                bx, by, bw, bh = bbox
+                # Text starts after the disclosure triangle if it's a directory
+                indent_offset = 20 if os.path.isdir(vals[0]) else 0
+                target_x = W - 30
+                space_needed = target_x - (bx + indent_offset + w_base)
+                if space_needed > 0:
+                    num_spaces = int(round(space_needed / w_space))
+                    if num_spaces < 1:
+                        num_spaces = 1
+                    new_text = f"{base_text}{' ' * num_spaces}✕"
+                else:
+                    new_text = f"{base_text} ✕"
+                
+                if text != new_text:
+                    self.tree.item(item_id, text=new_text)
+
+
 
 

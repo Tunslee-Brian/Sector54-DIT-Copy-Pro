@@ -45,6 +45,15 @@ class TestCore(unittest.TestCase):
         self.assertEqual(res_date["Roll"], "005")
         self.assertEqual(res_date["Date"], "210726")
 
+        # Test UID token parsing
+        parser_uid = TokenParser("{Camera:1}{Roll:3}C{Clip:3}_{UID:2}_{Date:8}")
+        res_uid = parser_uid.parse("A005C012_AX_25072026.MXF", fallback_project="TestProj")
+        self.assertEqual(res_uid["Camera"], "A")
+        self.assertEqual(res_uid["Roll"], "005")
+        self.assertEqual(res_uid["Clip"], "012")
+        self.assertEqual(res_uid["UID"], "AX")
+        self.assertEqual(res_uid["Date"], "25072026")
+
     def test_directory_builder(self):
         builder = DirectoryBuilder("{Destination}/Footage/{Camera}/Roll_{Roll}/")
         tokens = {"Camera": "A", "Roll": "005"}

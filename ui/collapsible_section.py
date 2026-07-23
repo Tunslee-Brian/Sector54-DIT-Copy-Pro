@@ -8,12 +8,13 @@ class CollapsibleSection(ctk.CTkFrame):
     Features 26px slim header with '▾' / '▸' toggle arrows and tight content margins.
     """
 
-    def __init__(self, master, title: str, is_open: bool = True, on_toggle_callback=None, **kwargs):
+    def __init__(self, master, title: str, is_open: bool = True, on_toggle_callback=None, action_callback=None, **kwargs):
         super().__init__(master, fg_color="transparent", corner_radius=0, border_width=0, **kwargs)
 
         self.title_text = title
         self.is_open = is_open
         self.on_toggle_callback = on_toggle_callback
+        self.action_callback = action_callback
 
         self._build_ui()
 
@@ -40,6 +41,21 @@ class CollapsibleSection(ctk.CTkFrame):
             command=self.toggle
         )
         self.btn_toggle.grid(row=0, column=0, sticky="ew", padx=4, pady=0)
+
+        if self.action_callback:
+            self.header_frame.grid_columnconfigure(1, weight=0)
+            self.btn_action = ctk.CTkButton(
+                self.header_frame,
+                text="+",
+                font=(theme.FONT_FAMILY, 14, "bold"),
+                width=24,
+                height=20,
+                fg_color="transparent",
+                hover_color=theme.CARD_BG,
+                text_color=theme.TEXT_MAIN,
+                command=self.action_callback
+            )
+            self.btn_action.grid(row=0, column=1, sticky="e", padx=6, pady=0)
 
         # Content Frame
         self.content_frame = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)

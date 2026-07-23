@@ -51,7 +51,8 @@ class ShotPutSidebar(ctk.CTkFrame):
         # -------------------------------------------------------------
         self.sec_input = CollapsibleSection(
             self.vpaned, title="INPUT (SOURCE)", is_open=True,
-            on_toggle_callback=self._handle_section_toggled
+            on_toggle_callback=self._handle_section_toggled,
+            action_callback=self._show_add_input_menu
         )
         self.vpaned.add(self.sec_input, weight=1)
 
@@ -59,7 +60,8 @@ class ShotPutSidebar(ctk.CTkFrame):
             self.sec_input.content_frame,
             height_rows=4,
             on_node_select_callback=self._handle_node_select,
-            on_right_click_callback=self._on_input_right_click
+            on_right_click_callback=self._on_input_right_click,
+            on_discard_callback=self._on_input_discard
         )
         self.tree_input.pack(fill="both", expand=True)
         self.tree_input.load_directory_tree("", placeholder="  (Kéo thả thư mục Nguồn vào đây)")
@@ -69,7 +71,8 @@ class ShotPutSidebar(ctk.CTkFrame):
         # -------------------------------------------------------------
         self.sec_output = CollapsibleSection(
             self.vpaned, title="OUTPUT (DESTINATIONS)", is_open=True,
-            on_toggle_callback=self._handle_section_toggled
+            on_toggle_callback=self._handle_section_toggled,
+            action_callback=self._show_add_output_menu
         )
         self.vpaned.add(self.sec_output, weight=1)
 
@@ -77,7 +80,8 @@ class ShotPutSidebar(ctk.CTkFrame):
             self.sec_output.content_frame,
             height_rows=4,
             on_node_select_callback=self._handle_node_select,
-            on_right_click_callback=self._on_output_right_click
+            on_right_click_callback=self._on_output_right_click,
+            on_discard_callback=self._on_output_discard
         )
         self.tree_output.pack(fill="both", expand=True)
         self.tree_output.load_multiple_paths_tree([], placeholder="  (Kéo thả thư mục Đích vào đây)")
@@ -106,10 +110,20 @@ class ShotPutSidebar(ctk.CTkFrame):
         drives_tv.bind("<ButtonRelease-1>", self._on_drag_release, add="+")
 
         # Bind sash movement & window resize events to clamp collapsed pane sizes
-        self._clamp_timer_id = None
-        self.vpaned.bind("<B1-Motion>", self._on_sash_motion, add="+")
-        self.vpaned.bind("<ButtonRelease-1>", self._on_sash_release, add="+")
-        self.bind("<Configure>", self._on_sidebar_configure, add="+")
+        self.vpaned.bind("<B1-Motion>", self._clamp_sashes, add="+")
+        self.vpaned.bind("<ButtonRelease-1>", self._clamp_sashes, add="+")
+        self.bind("<Configure>", lambda e: self.after(20, self._clamp_sashes), add="+")
+
+        # Register external drag & drop targets if library is loaded
+        try:
+            from tkinterdnd2 import DND_FILES
+            self.tree_input.tree.drop_target_register(DND_FILES)
+            self.tree_input.tree.dnd_bind("<<Drop>>", self._on_external_drop_input)
+
+            self.tree_output.tree.drop_target_register(DND_FILES)
+            self.tree_output.tree.dnd_bind("<<Drop>>", self._on_external_drop_output)
+        except Exception as e:
+            print(f"⚠️ Warning: Could not register external drag and drop targets: {e}")
 
     # -----------------------------------------------------------------
     # Drag & Drop Handlers
@@ -166,6 +180,22 @@ class ShotPutSidebar(ctk.CTkFrame):
         except Exception:
             return False
 
+    def _on_external_drop_input(self, event):
+        try:
+            files = self.tk.splitlist(event.data)
+            if files:
+                self.set_source_path(files[0])
+        except Exception as e:
+            print(f"⚠️ Error parsing drop input data: {e}")
+
+    def _on_external_drop_output(self, event):
+        try:
+            files = self.tk.splitlist(event.data)
+            for f in files:
+                self.add_destination_path(f)
+        except Exception as e:
+            print(f"⚠️ Error parsing drop output data: {e}")
+
     # -----------------------------------------------------------------
     # Right-Click Context Menus & File Operations
     # -----------------------------------------------------------------
@@ -182,7 +212,6 @@ class ShotPutSidebar(ctk.CTkFrame):
             menu.add_command(label="📋 Sao chép đường dẫn", command=lambda: self._action_copy_path(path))
             menu.add_command(label="📁 Tạo Thư mục mới...", command=lambda: self._action_new_folder(path))
             menu.add_command(label="✏️ Đổi tên...", command=lambda: self._action_rename(path))
-            menu.add_command(label="🗑️ Xóa vĩnh viễn khỏi ổ đĩa", command=lambda: self._action_delete(path))
 
         if menu.index("end") is not None:
             menu.tk_popup(event.x_root, event.y_root)
@@ -208,7 +237,6 @@ class ShotPutSidebar(ctk.CTkFrame):
             menu.add_command(label="📋 Sao chép đường dẫn", command=lambda: self._action_copy_path(path))
             menu.add_command(label="📁 Tạo Thư mục mới...", command=lambda: self._action_new_folder(path))
             menu.add_command(label="✏️ Đổi tên...", command=lambda: self._action_rename(path))
-            menu.add_command(label="🗑️ Xóa vĩnh viễn khỏi ổ đĩa", command=lambda: self._action_delete(path))
 
         if menu.index("end") is not None:
             menu.tk_popup(event.x_root, event.y_root)
@@ -231,7 +259,6 @@ class ShotPutSidebar(ctk.CTkFrame):
             menu.add_command(label="📋 Sao chép đường dẫn", command=lambda: self._action_copy_path(path))
             menu.add_command(label="📁 Tạo Thư mục mới...", command=lambda: self._action_new_folder(path))
             menu.add_command(label="✏️ Đổi tên...", command=lambda: self._action_rename(path))
-            menu.add_command(label="🗑️ Xóa vĩnh viễn khỏi ổ đĩa", command=lambda: self._action_delete(path))
             menu.add_separator()
 
         menu.add_command(label="🔄 Tải lại danh sách ổ đĩa", command=self._load_initial_trees)
@@ -307,35 +334,6 @@ class ShotPutSidebar(ctk.CTkFrame):
             except Exception as e:
                 tk.messagebox.showerror("Lỗi", f"Không thể đổi tên: {e}")
 
-    def _action_delete(self, target_path: str):
-        if not target_path or not os.path.exists(target_path):
-            return
-        name = os.path.basename(target_path.rstrip("/\\")) or target_path
-
-        from tkinter import messagebox
-        confirm = messagebox.askyesno(
-            "Xác nhận xóa",
-            f"Bạn có chắc chắn muốn XÓA vĩnh viễn '{name}' khỏi ổ đĩa không?\n\nĐường dẫn: {target_path}",
-            icon="warning"
-        )
-        if confirm:
-            try:
-                import shutil
-                if os.path.isdir(target_path):
-                    shutil.rmtree(target_path)
-                else:
-                    os.remove(target_path)
-
-                if target_path == self.source_path:
-                    self.clear_source_path()
-                if target_path in self.destinations:
-                    self.remove_destination_path(target_path)
-
-                self._refresh_all_trees()
-            except Exception as e:
-                from tkinter import messagebox
-                messagebox.showerror("Lỗi", f"Không thể xóa tệp/thư mục: {e}")
-
     def _refresh_all_trees(self, preserve_input_open: set = None, preserve_output_open: set = None):
         open_in = preserve_input_open if preserve_input_open is not None else self.tree_input.get_expanded_paths()
         open_out = preserve_output_open if preserve_output_open is not None else self.tree_output.get_expanded_paths()
@@ -390,7 +388,21 @@ class ShotPutSidebar(ctk.CTkFrame):
 
     def set_source_path(self, path: str):
         if path and os.path.exists(path):
-            self.source_path = os.path.abspath(path)
+            abs_path = os.path.abspath(path)
+            from tkinter import messagebox
+            for dest in self.destinations:
+                abs_dest = os.path.abspath(dest)
+                if abs_path == abs_dest:
+                    messagebox.showerror("Lỗi Cấu Hình Đường Dẫn", "Thư mục nguồn không được trùng với thư mục đích đã chọn.")
+                    return
+                if abs_path.startswith(abs_dest + os.sep):
+                    messagebox.showerror("Lỗi Cấu Hình Đường Dẫn", "Thư mục nguồn không được nằm trong thư mục đích đã chọn.")
+                    return
+                if abs_dest.startswith(abs_path + os.sep):
+                    messagebox.showerror("Lỗi Cấu Hình Đường Dẫn", "Thư mục đích đã chọn không được nằm trong thư mục nguồn.")
+                    return
+
+            self.source_path = abs_path
             self.tree_input.load_directory_tree(self.source_path)
             if self.on_source_changed:
                 self.on_source_changed(self.source_path)
@@ -406,7 +418,29 @@ class ShotPutSidebar(ctk.CTkFrame):
 
     def add_destination_path(self, path: str):
         if path and os.path.exists(path):
+            from tkinter import messagebox
+            if not os.path.isdir(path):
+                messagebox.showerror("Lỗi Cấu Hình Đường Dẫn", "Thư mục đích phải là một thư mục (Directory), không được là tập tin.")
+                return
+
             abs_path = os.path.abspath(path)
+
+            if self.source_path:
+                abs_src = os.path.abspath(self.source_path)
+                if abs_path == abs_src:
+                    messagebox.showerror("Lỗi Cấu Hình Đường Dẫn", "Thư mục đích không được trùng với thư mục nguồn.")
+                    return
+                if abs_path.startswith(abs_src + os.sep):
+                    messagebox.showerror("Lỗi Cấu Hình Đường Dẫn", "Thư mục đích không được nằm trong thư mục nguồn.")
+                    return
+                if abs_src.startswith(abs_path + os.sep):
+                    messagebox.showerror("Lỗi Cấu Hình Đường Dẫn", "Thư mục nguồn không được nằm trong thư mục đích.")
+                    return
+
+            if not os.access(abs_path, os.W_OK):
+                messagebox.showerror("Quyền Truy Cập", f"Không có quyền ghi vào thư mục đích: {abs_path}")
+                return
+
             if abs_path not in self.destinations:
                 self.destinations.append(abs_path)
                 self.tree_output.load_multiple_paths_tree(self.destinations)
@@ -432,6 +466,53 @@ class ShotPutSidebar(ctk.CTkFrame):
         self.clear_source_path()
         self.clear_destinations()
 
+    def _show_add_input_menu(self):
+        menu = tk.Menu(self, tearoff=0, bg=theme.CARD_BG, fg=theme.TEXT_MAIN, activebackground=theme.ACCENT_PRIMARY)
+        menu.add_command(label="📁 Chọn Thư mục...", command=self._browse_input_folder)
+        menu.add_command(label="📄 Chọn Tập tin...", command=self._browse_input_file)
+        
+        try:
+            x = self.sec_input.btn_action.winfo_rootx()
+            y = self.sec_input.btn_action.winfo_rooty() + self.sec_input.btn_action.winfo_height()
+            menu.tk_popup(x, y)
+        except Exception:
+            pass
+
+    def _browse_input_folder(self):
+        from tkinter import filedialog
+        folder = filedialog.askdirectory(title="Chọn Thư Mục Nguồn (Input)")
+        if folder:
+            self.set_source_path(folder)
+
+    def _browse_input_file(self):
+        from tkinter import filedialog
+        file_path = filedialog.askopenfilename(title="Chọn Tập Tin Nguồn (Input)")
+        if file_path:
+            self.set_source_path(file_path)
+
+    def _on_input_discard(self, path: str):
+        self.clear_source_path()
+
+    def _show_add_output_menu(self):
+        menu = tk.Menu(self, tearoff=0, bg=theme.CARD_BG, fg=theme.TEXT_MAIN, activebackground=theme.ACCENT_PRIMARY)
+        menu.add_command(label="📁 Chọn Thư mục Đích...", command=self._browse_output_folder)
+        
+        try:
+            x = self.sec_output.btn_action.winfo_rootx()
+            y = self.sec_output.btn_action.winfo_rooty() + self.sec_output.btn_action.winfo_height()
+            menu.tk_popup(x, y)
+        except Exception:
+            pass
+
+    def _browse_output_folder(self):
+        from tkinter import filedialog
+        folder = filedialog.askdirectory(title="Chọn Thư Mục Đích (Output)")
+        if folder:
+            self.add_destination_path(folder)
+
+    def _on_output_discard(self, path: str):
+        self.remove_destination_path(path)
+
 
     # -----------------------------------------------------------------
     # Layout Clamping & Section Handling
@@ -439,48 +520,30 @@ class ShotPutSidebar(ctk.CTkFrame):
     def _handle_section_toggled(self):
         self.after(10, self._rebalance_sections)
 
-    def _on_sash_motion(self, event=None):
-        if self._clamp_timer_id is not None:
+    def _get_header_height(self) -> float:
+        header_h = 30.0
+        if hasattr(self, "sec_input") and self.sec_input.winfo_exists():
             try:
-                self.after_cancel(self._clamp_timer_id)
+                req_h = self.sec_input.header_frame.winfo_reqheight()
+                if req_h > 10:
+                    header_h = float(req_h + 4)
             except Exception:
                 pass
-        self._clamp_timer_id = self.after(30, self._clamp_sashes)
-
-    def _on_sash_release(self, event=None):
-        if self._clamp_timer_id is not None:
-            try:
-                self.after_cancel(self._clamp_timer_id)
-                self._clamp_timer_id = None
-            except Exception:
-                pass
-        self._clamp_sashes()
-
-    def _on_sidebar_configure(self, event=None):
-        if self._clamp_timer_id is not None:
-            try:
-                self.after_cancel(self._clamp_timer_id)
-            except Exception:
-                pass
-        self._clamp_timer_id = self.after(40, self._clamp_sashes)
+        return header_h
 
     def _clamp_sashes(self, event=None):
-        """Clamp sash positions so collapsed sections stay fixed at header height (~30px) without black gaps or overlaps."""
-        self._clamp_timer_id = None
+        """Clamp sash positions so collapsed sections stay fixed at header height without black gaps or overlaps."""
         total_h = self.vpaned.winfo_height()
         if total_h < 100:
             return
 
-        HEADER_H = 30.0
+        HEADER_H = self._get_header_height()
 
         try:
-            y0_curr = float(self.vpaned.sashpos(0))
-            y1_curr = float(self.vpaned.sashpos(1))
+            y0 = float(self.vpaned.sashpos(0))
+            y1 = float(self.vpaned.sashpos(1))
         except Exception:
             return
-
-        y0 = y0_curr
-        y1 = y1_curr
 
         sec0_open = self.sec_input.is_open
         sec1_open = self.sec_output.is_open
@@ -514,15 +577,14 @@ class ShotPutSidebar(ctk.CTkFrame):
                 y0 = y1 - HEADER_H
 
         try:
-            if abs(y0 - y0_curr) >= 2.0:
-                self.vpaned.sashpos(0, int(y0))
-            if abs(y1 - y1_curr) >= 2.0:
-                self.vpaned.sashpos(1, int(y1))
+            self.vpaned.sashpos(0, int(y0))
+            self.vpaned.sashpos(1, int(y1))
         except Exception:
             pass
 
     def _rebalance_sections(self):
         """Dynamically synchronize section collapse/expand with PanedWindow sash splitters."""
+        self.update_idletasks()
         sections = [self.sec_input, self.sec_output, self.sec_drives]
 
         total_h = self.vpaned.winfo_height()
@@ -531,21 +593,27 @@ class ShotPutSidebar(ctk.CTkFrame):
         if total_h < 100:
             total_h = 600
 
-        header_h = 30
+        header_h = self._get_header_height()
         open_sections = [s for s in sections if s.is_open]
         open_count = len(open_sections)
         collapsed_count = len(sections) - open_count
 
-        avail_h = max(30 * max(1, open_count), total_h - (collapsed_count * header_h))
+        avail_h = max(header_h * max(1, open_count), total_h - (collapsed_count * header_h))
         height_per_open = avail_h / max(1, open_count)
 
         curr_y = 0.0
         for i, sec in enumerate(sections):
+            w = 1 if sec.is_open else 0
+            try:
+                current_w = int(self.vpaned.pane(sec, "weight"))
+            except Exception:
+                current_w = -1
+            if current_w != w:
+                self.vpaned.pane(sec, weight=w)
+
             if sec.is_open:
-                self.vpaned.pane(sec, weight=1)
                 curr_y += height_per_open
             else:
-                self.vpaned.pane(sec, weight=0)
                 curr_y += header_h
 
             if i < len(sections) - 1:
@@ -564,18 +632,27 @@ class ShotPutSidebar(ctk.CTkFrame):
         """Start periodic background check for connected drives."""
         import threading
 
+        self._poll_after_id = None
+
         def poll():
+            if not self.winfo_exists():
+                return
             def worker():
                 try:
+                    if not self.winfo_exists():
+                        return
                     drives_list = self._detect_all_drives()
-                    self.after(0, lambda: self._update_drives_tree_if_changed(drives_list))
+                    if self.winfo_exists():
+                        self.after(0, lambda: self._update_drives_tree_if_changed(drives_list))
                 except Exception:
                     pass
 
             threading.Thread(target=worker, daemon=True).start()
-            self.after(2000, poll)
+            if self.winfo_exists():
+                self._poll_after_id = self.after(5000, poll)
 
-        self.after(2000, poll)
+        if self.winfo_exists():
+            self._poll_after_id = self.after(5000, poll)
 
     def _update_drives_tree_if_changed(self, drives_list):
         if not hasattr(self, '_last_drives_list') or self._last_drives_list != drives_list:
@@ -669,9 +746,6 @@ class ShotPutSidebar(ctk.CTkFrame):
                         if mountpoint == prefix or mountpoint.startswith(prefix + '/'):
                             if home and (mountpoint == home or mountpoint.startswith(home + '/')):
                                 continue
-                            # Do not skip gvfs, kio-fuse, or run/media mountpoints
-                            if mountpoint.startswith('/run/media/') or 'kio-fuse' in mountpoint or 'gvfs' in mountpoint:
-                                continue
                             is_skip = True
                             break
                     if is_skip:
@@ -694,8 +768,6 @@ class ShotPutSidebar(ctk.CTkFrame):
                         label = f"Volume ({name})"
                     elif "mnt" in mountpoint:
                         label = f"Mount ({name})"
-                    elif "kio-fuse" in mountpoint or "gvfs" in mountpoint:
-                        label = f"Mobile ({name})"
                     elif "fuse" in fstype or "rclone" in fstype or "google" in mountpoint.lower():
                         label = f"Cloud ({name})"
                     else:
@@ -763,41 +835,13 @@ class ShotPutSidebar(ctk.CTkFrame):
                     except Exception:
                         pass
 
-            # 4. Scan GVfs and KIO-Fuse mount points for mobile devices/network shares
-            user_id = os.getuid() if hasattr(os, 'getuid') else 1000
-            run_user_dir = f"/run/user/{user_id}"
-            if os.path.exists(run_user_dir):
-                try:
-                    # Scan GVfs mounts
-                    gvfs_dir = os.path.join(run_user_dir, "gvfs")
-                    if os.path.exists(gvfs_dir):
-                        for d in os.listdir(gvfs_dir):
-                            full_p = os.path.join(gvfs_dir, d)
-                            if os.path.isdir(full_p):
-                                label = f"Mobile ({d})"
-                                if d.startswith("mtp:"):
-                                    import urllib.parse
-                                    friendly_name = urllib.parse.unquote(d)
-                                    if friendly_name.startswith("mtp:host="):
-                                        friendly_name = friendly_name[len("mtp:host="):]
-                                    label = f"Mobile ({friendly_name})"
-                                add_drive(label, full_p)
-                except Exception:
-                    pass
-
-                try:
-                    # Scan kio-fuse mounts
-                    for item in os.listdir(run_user_dir):
-                        if item.startswith("kio-fuse-"):
-                            kio_root = os.path.join(run_user_dir, item)
-                            mtp_dir = os.path.join(kio_root, "mtp")
-                            if os.path.exists(mtp_dir):
-                                for device in os.listdir(mtp_dir):
-                                    device_path = os.path.join(mtp_dir, device)
-                                    if os.path.isdir(device_path):
-                                        friendly_name = device.replace("_", " ")
-                                        add_drive(f"Mobile ({friendly_name})", device_path)
-                except Exception:
-                    pass
-
         return drives
+
+    def destroy(self):
+        if hasattr(self, "_poll_after_id") and self._poll_after_id:
+            try:
+                self.after_cancel(self._poll_after_id)
+            except Exception:
+                pass
+            self._poll_after_id = None
+        super().destroy()

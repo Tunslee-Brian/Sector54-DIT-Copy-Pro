@@ -9,152 +9,14 @@ import tkinter as tk
 from tkinter import ttk
 import customtkinter as ctk
 from PIL import Image, ImageTk
-import pygame
+# pygame is imported dynamically to avoid hard dependency on startup
 
 import ui.theme as theme
 
 
-def is_media_file(filepath: str) -> bool:
-    """Returns True if the file extension corresponds to a previewable media or document file."""
-    if not filepath:
-        return False
-
-    ext = os.path.splitext(filepath)[1].lower()
-    media_extensions = {
-        # Video
-        ".mp4", ".mov", ".mxf", ".mkv", ".avi", ".webm", ".m4v", ".flv", ".wmv", ".ts",
-        ".ari", ".r3d", ".braw", ".arw", ".cr3",
-        # Image
-        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".dng", ".ico",
-        # Audio
-        ".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma", ".aiff",
-        # Documents / Logs / Metadata
-        ".txt", ".json", ".csv", ".md", ".log", ".xml", ".mhl", ".ini", ".py", ".sh"
-    }
-    return ext in media_extensions
-
-
-def get_media_category(filepath: str) -> str:
-    if not filepath:
-        return "NONE"
-    ext = os.path.splitext(filepath)[1].lower()
-    if ext in {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".dng", ".ico"}:
-        return "IMAGE"
-    elif ext in {".mp3", ".wav", ".aac", ".flac", ".ogg", ".m4a", ".wma", ".aiff"}:
-        return "AUDIO"
-    elif ext in {".mp4", ".mov", ".mxf", ".mkv", ".avi", ".webm", ".m4v", ".flv", ".wmv", ".ts", ".ari", ".r3d", ".braw", ".arw", ".cr3"}:
-        return "VIDEO"
-    elif ext in {".txt", ".json", ".csv", ".md", ".log", ".xml", ".mhl", ".ini", ".py", ".sh"}:
-        return "DOCUMENT"
-    return "FILE"
-
-
-def _get_subprocess_kwargs():
-    kwargs = {}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    return kwargs
-
-
-class InAppVideoDecoder:
-    """
-    Background video decoder pipeline using ffmpeg rawvideo pipe.
-    Extracts frames preserving target aspect ratio and pushes to thread-safe queue.
-    """
-
-    def __init__(self):
-        self.filepath = ""
-        self.proc = None
-        self.thread = None
-        self.queue = queue.Queue(maxsize=8)
-        self.is_running = False
-        self.is_paused = False
-        self.fps = 24.0
-        self.width = 640
-        self.height = 360
-
-    def start(self, filepath: str, start_sec: float = 0.0, render_w: int = 640, render_h: int = 360, fps: float = 24.0):
-        self.stop()
-        self.filepath = filepath
-        self.width = max(160, render_w)
-        self.height = max(120, render_h)
-        self.fps = max(1.0, fps)
-        self.is_running = True
-        self.is_paused = False
-
-        self.thread = threading.Thread(target=self._run_decoder, args=(start_sec,), daemon=True)
-        self.thread.start()
-
-    def _run_decoder(self, start_sec: float):
-        cmd = [
-            "ffmpeg", "-loglevel", "quiet",
-            "-ss", str(start_sec),
-            "-i", self.filepath,
-            "-f", "image2pipe",
-            "-pix_fmt", "rgb24",
-            "-vcodec", "rawvideo",
-            "-s", f"{self.width}x{self.height}",
-            "-"
-        ]
-        try:
-            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_get_subprocess_kwargs())
-        except Exception:
-            return
-
-        frame_size = self.width * self.height * 3
-        curr_time = start_sec
-
-        while self.is_running and self.proc and self.proc.poll() is None:
-            if self.is_paused:
-                time.sleep(0.05)
-                continue
-
-            try:
-                raw_bytes = self.proc.stdout.read(frame_size)
-                if not raw_bytes or len(raw_bytes) < frame_size:
-                    break
-
-                img = Image.frombytes("RGB", (self.width, self.height), raw_bytes)
-                curr_time += (1.0 / self.fps)
-
-                while self.is_running and not self.is_paused:
-                    try:
-                        self.queue.put((img, curr_time), timeout=0.1)
-                        break
-                    except queue.Full:
-                        if not self.is_running:
-                            break
-                        time.sleep(0.02)
-            except Exception:
-                break
-
-    def pause(self):
-        self.is_paused = True
-
-    def resume(self):
-        self.is_paused = False
-
-    def stop(self):
-        self.is_running = False
-        self.is_paused = False
-        if self.proc:
-            try:
-                if self.proc.stdout:
-                    self.proc.stdout.close()
-                if self.proc.stderr:
-                    self.proc.stderr.close()
-                self.proc.terminate()
-                self.proc.kill()
-                self.proc.wait(timeout=1)
-            except Exception:
-                pass
-            self.proc = None
-
-        while not self.queue.empty():
-            try:
-                self.queue.get_nowait()
-            except Exception:
-                break
+from ui.preview import is_media_file, get_media_category, InAppVideoDecoder
+from ui.preview.preview_helpers import get_subprocess_kwargs as _get_subprocess_kwargs
+from core.logger_config import logger
 
 
 class MediaPreviewWidget(ctk.CTkFrame):
@@ -173,6 +35,8 @@ class MediaPreviewWidget(ctk.CTkFrame):
 
         # Image state
         self._orig_pil_image = None
+        self._poster_pil_image = None
+        self._poster_lock = threading.Lock()
         self._zoom_factor = 1.0
 
         # Audio state
@@ -277,6 +141,11 @@ class MediaPreviewWidget(ctk.CTkFrame):
     # -----------------------------------------------------------------
     def load_file(self, filepath: str):
         """Load and display preview for a new file."""
+        if filepath:
+            abs_path = os.path.abspath(filepath)
+            if self.filepath == abs_path and len(self.container.winfo_children()) > 0:
+                return
+
         self._stop_all_playback()
         self._clear_container_widgets()
 
@@ -449,16 +318,27 @@ class MediaPreviewWidget(ctk.CTkFrame):
         if not self._orig_pil_image or not hasattr(self, "lbl_image_display") or not self.lbl_image_display.winfo_exists():
             return
 
+    def _get_fit_ratio(self) -> float:
+        if not self._orig_pil_image:
+            return 1.0
         w, h = self._orig_pil_image.size
-        new_w = max(50, int(w * self._zoom_factor))
-        new_h = max(50, int(h * self._zoom_factor))
+        avail_w = max(400, self.img_scroll_frame.winfo_width() - 40)
+        avail_h = max(300, self.img_scroll_frame.winfo_height() - 40)
+        return min(avail_w / max(1, w), avail_h / max(1, h), 1.0)
+
+    def _display_image(self):
+        if not self._orig_pil_image:
+            return
+
+        w, h = self._orig_pil_image.size
 
         if self._zoom_factor == 1.0:
-            avail_w = max(400, self.img_scroll_frame.winfo_width() - 40)
-            avail_h = max(300, self.img_scroll_frame.winfo_height() - 40)
-            ratio = min(avail_w / max(1, w), avail_h / max(1, h), 1.0)
+            ratio = self._get_fit_ratio()
             new_w = max(50, int(w * ratio))
             new_h = max(50, int(h * ratio))
+        else:
+            new_w = max(50, int(w * self._zoom_factor))
+            new_h = max(50, int(h * self._zoom_factor))
 
         resized_pil = self._orig_pil_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
         ctk_img = ctk.CTkImage(light_image=resized_pil, dark_image=resized_pil, size=(new_w, new_h))
@@ -467,7 +347,7 @@ class MediaPreviewWidget(ctk.CTkFrame):
 
     def _adjust_image_zoom(self, factor: float):
         if self._zoom_factor == 1.0:
-            self._zoom_factor = 1.0 * factor
+            self._zoom_factor = self._get_fit_ratio() * factor
         else:
             self._zoom_factor *= factor
         self._zoom_factor = max(0.1, min(5.0, self._zoom_factor))
@@ -740,6 +620,10 @@ class MediaPreviewWidget(ctk.CTkFrame):
             if pos_ms >= 0:
                 current_sec = pos_ms / 1000.0
                 is_busy = True
+            else:
+                # Trạng thái chuyển tiếp, bỏ qua cập nhật chu kỳ này
+                self._audio_update_job = self.after(200, self._update_audio_loop)
+                return
         elif self.audio_ffplay_proc and self.audio_ffplay_proc.poll() is None:
             current_sec = time.time() - getattr(self, "_audio_start_time", time.time())
             is_busy = True
@@ -906,11 +790,12 @@ class MediaPreviewWidget(ctk.CTkFrame):
         return scaled_w, scaled_h
 
     def _render_poster_image(self):
-        if hasattr(self, "_poster_pil_image") and self._poster_pil_image and hasattr(self, "lbl_video_display") and self.lbl_video_display.winfo_exists() and not self._is_playing_video:
-            nw, nh = self._get_aspect_fitted_dimensions()
-            resized = self._poster_pil_image.resize((nw, nh), Image.Resampling.LANCZOS)
-            ctk_img = ctk.CTkImage(light_image=resized, dark_image=resized, size=(nw, nh))
-            self.lbl_video_display.configure(image=ctk_img, text="")
+        with self._poster_lock:
+            if hasattr(self, "_poster_pil_image") and self._poster_pil_image and hasattr(self, "lbl_video_display") and self.lbl_video_display.winfo_exists() and not self._is_playing_video:
+                nw, nh = self._get_aspect_fitted_dimensions()
+                resized = self._poster_pil_image.resize((nw, nh), Image.Resampling.LANCZOS)
+                ctk_img = ctk.CTkImage(light_image=resized, dark_image=resized, size=(nw, nh))
+                self.lbl_video_display.configure(image=ctk_img, text="")
 
     def _load_video_metadata_and_poster(self):
         if not self.filepath or not os.path.exists(self.filepath):
@@ -972,6 +857,7 @@ class MediaPreviewWidget(ctk.CTkFrame):
             except Exception:
                 pass
 
+            tmp_thumb_path = None
             try:
                 with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
                     tmp_thumb_path = tmp_file.name
@@ -984,9 +870,14 @@ class MediaPreviewWidget(ctk.CTkFrame):
                 if os.path.exists(tmp_thumb_path) and os.path.getsize(tmp_thumb_path) > 0:
                     with Image.open(tmp_thumb_path) as img:
                         poster_pil = img.copy()
-                    os.remove(tmp_thumb_path)
             except Exception:
                 pass
+            finally:
+                if tmp_thumb_path and os.path.exists(tmp_thumb_path):
+                    try:
+                        os.remove(tmp_thumb_path)
+                    except Exception:
+                        pass
 
             def _apply():
                 if getattr(self, "filepath", "") != target_filepath:
@@ -1011,7 +902,8 @@ class MediaPreviewWidget(ctk.CTkFrame):
                     self.lbl_video_time.configure(text=f"00:00 / {self._format_seconds(v_duration)}")
 
                 if poster_pil:
-                    self._poster_pil_image = poster_pil
+                    with self._poster_lock:
+                        self._poster_pil_image = poster_pil
                     self._render_poster_image()
 
             if hasattr(self, "after"):
@@ -1066,6 +958,10 @@ class MediaPreviewWidget(ctk.CTkFrame):
             self.video_decoder.resume()
             self._video_paused = False
             self._is_playing_video = True
+            # Restart audio on resume and sync
+            self._start_video_audio(self._video_current_sec)
+            self._video_start_time = time.time()
+            self._video_start_sec_offset = self._video_current_sec
         else:
             scaled_w, scaled_h = self._get_aspect_fitted_dimensions()
             self.video_decoder.start(
@@ -1078,6 +974,8 @@ class MediaPreviewWidget(ctk.CTkFrame):
             self._start_video_audio(self._video_current_sec)
             self._is_playing_video = True
             self._video_paused = False
+            self._video_start_time = time.time()
+            self._video_start_sec_offset = self._video_current_sec
 
         self.btn_toggle_video_play.configure(
             text="⏸ Tạm Dừng",
@@ -1141,6 +1039,8 @@ class MediaPreviewWidget(ctk.CTkFrame):
                 )
                 if self._is_playing_video:
                     self._start_video_audio(target_sec)
+                    self._video_start_time = time.time()
+                    self._video_start_sec_offset = target_sec
                 elif self._video_paused:
                     self.video_decoder.pause()
 
@@ -1148,25 +1048,42 @@ class MediaPreviewWidget(ctk.CTkFrame):
         if not self._is_playing_video or not hasattr(self, "lbl_video_display") or not self.lbl_video_display.winfo_exists():
             return
 
-        if not self.video_decoder.queue.empty():
+        import queue
+        now = time.time()
+        # 0.15s (150ms) is the average ffplay subprocess startup + audio device init latency.
+        elapsed = now - self._video_start_time + self._video_start_sec_offset - 0.15
+
+        img = None
+        curr_t = self._video_current_sec
+
+        while not self.video_decoder.queue.empty():
             try:
-                img, curr_t = self.video_decoder.queue.get_nowait()
-                self._video_current_sec = curr_t
-                w, h = img.size
-                ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(w, h))
-                self.lbl_video_display.configure(image=ctk_img, text="")
-
-                if self._video_duration > 0:
-                    pct = (curr_t / self._video_duration) * 100.0
-                    self.slider_video_seek.set(pct)
-                    self.lbl_video_time.configure(
-                        text=f"{self._format_seconds(curr_t)} / {self._format_seconds(self._video_duration)}"
-                    )
+                next_img, next_t = self.video_decoder.queue.queue[0]
+                if next_t <= elapsed:
+                    img, curr_t = self.video_decoder.queue.get_nowait()
+                else:
+                    break
+            except (IndexError, queue.Empty):
+                break
             except Exception:
-                pass
+                break
 
-        delay_ms = max(10, int(1000.0 / max(1.0, self._video_fps)))
+        if img:
+            self._video_current_sec = curr_t
+            w, h = img.size
+            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(w, h))
+            self.lbl_video_display.configure(image=ctk_img, text="")
+
+            if self._video_duration > 0:
+                pct = (curr_t / self._video_duration) * 100.0
+                self.slider_video_seek.set(pct)
+                self.lbl_video_time.configure(
+                    text=f"{self._format_seconds(curr_t)} / {self._format_seconds(self._video_duration)}"
+                )
+
+        delay_ms = max(5, int(1000.0 / max(1.0, self._video_fps)))
         self._video_tick_job = self.after(delay_ms, self._video_frame_tick)
+
 
     # -----------------------------------------------------------------
     # 4. DOCUMENT / LOG PREVIEW

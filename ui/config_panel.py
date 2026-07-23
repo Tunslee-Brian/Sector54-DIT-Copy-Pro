@@ -7,185 +7,8 @@ import customtkinter as ctk
 import ui.theme as theme
 from core.preset_manager import PresetManager
 from core.token_parser import format_date
-class ColorSyntaxEntry(ctk.CTkFrame):
-    """
-    Single-line Input Widget with real-time Syntax Highlighting for Tokens
-    matching the visual token color palette.
-    """
-    TOKEN_COLOR_MAP = {
-        "Camera": "#42A5F5",
-        "Roll": "#AB47BC",
-        "Clip": "#FFA726",
-        "UID": "#EC407A",
-        "Date": "#66BB6A",
-        "Project": "#26C6DA",
-        "Destination": "#7986CB"
-    }
-
-    def __init__(self, master, height=34, locked_prefix: str = None, **kwargs):
-        super().__init__(
-            master,
-            fg_color=theme.CARD_BG,
-            border_color=theme.CARD_BORDER,
-            border_width=1,
-            corner_radius=6,
-            height=height,
-            **kwargs
-        )
-
-        self.locked_prefix = locked_prefix
-        self.grid_propagate(False)
-        self.pack_propagate(False)
-
-        self.text_widget = tk.Text(
-            self,
-            height=1,
-            wrap="none",
-            bg=theme.CARD_BG,
-            fg="#FFFFFF",
-            insertbackground=theme.TEXT_MAIN,
-            selectbackground=theme.ACCENT_PRIMARY,
-            selectforeground="#FFFFFF",
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            font=(theme.FONT_FAMILY, 11, "bold")
-        )
-        self.text_widget.pack(fill="both", expand=True, padx=8, pady=6)
-
-        self._init_tags()
-
-        self.text_widget.bind("<KeyPress>", self._on_key_press)
-        self.text_widget.bind("<KeyRelease>", self._on_key_release)
-        self.text_widget.bind("<Return>", lambda e: "break")
-        self.text_widget.bind("<Tab>", lambda e: "break")
-
-        self.change_callbacks = []
-
-    def _init_tags(self):
-        for t_name, color in self.TOKEN_COLOR_MAP.items():
-            self.text_widget.tag_config(f"tok_{t_name}", foreground=color, font=(theme.FONT_FAMILY, 11, "bold"))
-        self.text_widget.tag_config("tok_static", foreground="#90A4AE", font=(theme.FONT_FAMILY, 11))
-        self.text_widget.tag_config("tok_unknown", foreground="#FFB74D", font=(theme.FONT_FAMILY, 11, "bold"))
-
-    def _on_key_press(self, event):
-        if not self.locked_prefix:
-            return
-
-        prefix_len = len(self.locked_prefix)
-
-        if event.keysym in ("BackSpace", "Delete"):
-            try:
-                sel_start = self.text_widget.index(tk.SEL_FIRST)
-                sel_start_col = int(sel_start.split(".")[1])
-                if sel_start_col < prefix_len:
-                    return "break"
-            except tk.TclError:
-                pass
-
-            try:
-                cursor_col = int(self.text_widget.index(tk.INSERT).split(".")[1])
-                if event.keysym == "BackSpace" and cursor_col <= prefix_len:
-                    return "break"
-                if event.keysym == "Delete" and cursor_col < prefix_len:
-                    return "break"
-            except Exception:
-                pass
-
-    def _enforce_locked_prefix(self):
-        if not self.locked_prefix:
-            return
-
-        content = self.text_widget.get("1.0", "end-1c").replace("\n", "").replace("\r", "")
-        if not content.startswith(self.locked_prefix):
-            clean_rest = content.replace(self.locked_prefix, "")
-            if clean_rest and not clean_rest.startswith("/"):
-                clean_rest = "/" + clean_rest
-            new_content = self.locked_prefix + clean_rest
-
-            self.text_widget.delete("1.0", tk.END)
-            self.text_widget.insert("1.0", new_content)
-
-            prefix_len = len(self.locked_prefix)
-            try:
-                self.text_widget.mark_set(tk.INSERT, f"1.0 + {prefix_len} chars")
-            except Exception:
-                pass
-        else:
-            # Strip any duplicate locked_prefix in the rest of string
-            rest = content[len(self.locked_prefix):]
-            if self.locked_prefix in rest:
-                cleaned_rest = rest.replace(self.locked_prefix, "")
-                new_content = self.locked_prefix + cleaned_rest
-                self.text_widget.delete("1.0", tk.END)
-                self.text_widget.insert("1.0", new_content)
-
-    def highlight_syntax(self):
-        content = self.get()
-        for t_name in self.TOKEN_COLOR_MAP:
-            self.text_widget.tag_remove(f"tok_{t_name}", "1.0", tk.END)
-        self.text_widget.tag_remove("tok_static", "1.0", tk.END)
-        self.text_widget.tag_remove("tok_unknown", "1.0", tk.END)
-
-        if not content:
-            return
-
-        token_regex = re.compile(r'\{([A-Za-z0-9_]+)(?::([A-Za-z0-9_\-]+))?\}')
-        last_pos = 0
-
-        for match in token_regex.finditer(content):
-            start, end = match.span()
-            if start > last_pos:
-                s_idx = f"1.0 + {last_pos} chars"
-                e_idx = f"1.0 + {start} chars"
-                self.text_widget.tag_add("tok_static", s_idx, e_idx)
-
-            token_name = match.group(1)
-            t_s_idx = f"1.0 + {start} chars"
-            t_e_idx = f"1.0 + {end} chars"
-
-            tag_key = f"tok_{token_name}" if token_name in self.TOKEN_COLOR_MAP else "tok_unknown"
-            self.text_widget.tag_add(tag_key, t_s_idx, t_e_idx)
-            last_pos = end
-
-        if last_pos < len(content):
-            s_idx = f"1.0 + {last_pos} chars"
-            e_idx = f"1.0 + {len(content)} chars"
-            self.text_widget.tag_add("tok_static", s_idx, e_idx)
-
-    def _on_key_release(self, event):
-        self._enforce_locked_prefix()
-        self.highlight_syntax()
-        for cb in self.change_callbacks:
-            cb()
-
-    def get(self) -> str:
-        self._enforce_locked_prefix()
-        return self.text_widget.get("1.0", "end-1c").replace("\n", "").replace("\r", "")
-
-    def insert(self, index, text: str):
-        if index == 0 or index == "0":
-            self.text_widget.delete("1.0", tk.END)
-            self.text_widget.insert("1.0", text)
-        elif index == "end" or index == tk.END:
-            self.text_widget.insert(tk.END, text)
-        else:
-            self.text_widget.insert(index, text)
-        self._enforce_locked_prefix()
-        self.highlight_syntax()
-
-    def delete(self, start, end=None):
-        if start == 0 or start == "0":
-            start = "1.0"
-        if end is None:
-            self.text_widget.delete(start)
-        else:
-            self.text_widget.delete(start, end)
-        self._enforce_locked_prefix()
-        self.highlight_syntax()
-
-    def bind_change(self, callback):
-        self.change_callbacks.append(callback)
+from ui.config.color_syntax_entry import ColorSyntaxEntry
+from core.logger_config import logger
 
 
 class ConfigPanel(ctk.CTkFrame):
@@ -201,7 +24,8 @@ class ConfigPanel(ctk.CTkFrame):
         ("{Roll}", "Số cuộn / thẻ nhớ (001-999)"),
         ("{Clip}", "Số thứ tự clip (C001, C002...)"),
         ("{UID}", "Ký tự ngẫu nhiên (BB, AX, 5R...)"),
-        ("{Date}", "Ngày ghi hình (YYMMDD)")
+        ("{Date}", "Ngày ghi hình (YYMMDD)"),
+        ("{Project}", "Tên dự án (Film Project)")
     ]
 
     FILE_TOKENS_WITH_LENGTH = {
@@ -295,14 +119,6 @@ class ConfigPanel(ctk.CTkFrame):
                     _recursive_bind(child)
             except Exception:
                 pass
-
-        try:
-            top = self.winfo_toplevel()
-            top.bind_all("<Button-4>", _on_mouse_wheel, add="+")
-            top.bind_all("<Button-5>", _on_mouse_wheel, add="+")
-            top.bind_all("<MouseWheel>", _on_mouse_wheel, add="+")
-        except Exception:
-            pass
 
         _recursive_bind(self)
 
@@ -606,7 +422,8 @@ class ConfigPanel(ctk.CTkFrame):
             "{Roll:3}": "#AB47BC",
             "{Clip:3}": "#FFA726",
             "{UID:2}": "#EC407A",
-            "{Date:YYMMDD}": "#66BB6A"
+            "{Date:YYMMDD}": "#66BB6A",
+            "{Project}": "#26C6DA"
         }
 
         for raw_token, _ in self.AVAILABLE_TOKENS:
@@ -687,8 +504,7 @@ class ConfigPanel(ctk.CTkFrame):
             "{Clip}": "#FFA726",
             "{UID}": "#EC407A",
             "{Date}": "#66BB6A",
-            "{Project}": "#26C6DA",
-            "{Destination}": "#7986CB"
+            "{Project}": "#26C6DA"
         }
 
         for token_code, desc in self.AVAILABLE_TOKENS:
@@ -706,9 +522,57 @@ class ConfigPanel(ctk.CTkFrame):
                 )
                 btn_token.pack(side="left", padx=(0, 3), pady=1)
 
+        # Options Row 2: File Extension Blacklist & Suppress Reports
+        extra_opt_frame = ctk.CTkFrame(self.scroll_container, fg_color="transparent")
+        extra_opt_frame.grid(row=5, column=0, columnspan=4, sticky="ew", padx=10, pady=(4, 2))
+
+        ctk.CTkLabel(extra_opt_frame, text="Bỏ qua đuôi file:", font=(theme.FONT_FAMILY, 12), text_color=theme.TEXT_MUTED).pack(side="left", padx=(0, 5))
+        self.entry_blacklist = ctk.CTkEntry(
+            extra_opt_frame,
+            placeholder_text=".txt, .py, .json",
+            fg_color=theme.CARD_BG,
+            border_color=theme.CARD_BORDER,
+            text_color=theme.TEXT_MAIN,
+            width=180,
+            height=32
+        )
+        self.entry_blacklist.pack(side="left", padx=(0, 15))
+        self.entry_blacklist.bind("<KeyRelease>", lambda e: self._on_input_changed())
+
+        ctk.CTkLabel(extra_opt_frame, text="Không tạo file báo cáo:", font=(theme.FONT_FAMILY, 12), text_color=theme.TEXT_MUTED).pack(side="left", padx=(0, 5))
+        self.switch_suppress_reports = ctk.CTkSwitch(
+            extra_opt_frame,
+            text="",
+            fg_color=theme.CARD_BORDER,
+            progress_color=theme.ACCENT_PRIMARY,
+            button_color=theme.ACCENT_PRIMARY_HOVER,
+            button_hover_color=theme.ACCENT_PRIMARY,
+            onvalue=True,
+            offvalue=False,
+            width=40,
+            height=24
+        )
+        self.switch_suppress_reports.pack(side="left")
+        self.switch_suppress_reports.configure(command=lambda: self._on_input_changed())
+
         # Options Row: Hash Algo | Log Format | Buffer Size
+        # Options Row: Project Name | Hash Algo | Log Format | Buffer Size
         opt_frame = ctk.CTkFrame(self.scroll_container, fg_color="transparent")
         opt_frame.grid(row=6, column=0, columnspan=4, sticky="ew", padx=10, pady=(4, 6))
+
+        ctk.CTkLabel(opt_frame, text="Dự án:", font=(theme.FONT_FAMILY, 12), text_color=theme.TEXT_MUTED).pack(side="left", padx=(0, 5))
+        self.entry_project_name = ctk.CTkEntry(
+            opt_frame,
+            placeholder_text="Film Project",
+            fg_color=theme.CARD_BG,
+            border_color=theme.CARD_BORDER,
+            text_color=theme.TEXT_MAIN,
+            width=120,
+            height=32
+        )
+        self.entry_project_name.insert(0, "Film Project")
+        self.entry_project_name.pack(side="left", padx=(0, 15))
+        self.entry_project_name.bind("<KeyRelease>", lambda e: self._on_input_changed())
 
         ctk.CTkLabel(opt_frame, text="Xác thực:", font=(theme.FONT_FAMILY, 12), text_color=theme.TEXT_MUTED).pack(side="left", padx=(0, 5))
         self.combo_hash = ctk.CTkOptionMenu(
@@ -792,12 +656,10 @@ class ConfigPanel(ctk.CTkFrame):
         pattern = self.entry_naming.get().strip()
         if re.search(r'\{Date(?::[A-Za-z0-9_\-]+)?\}', pattern):
             new_pattern = re.sub(r'\{Date(?::[A-Za-z0-9_\-]+)?\}', f'{{Date:{fmt}}}', pattern)
-        else:
-            new_pattern = pattern + f"_{{Date:{fmt}}}"
-        if new_pattern != pattern:
-            self.entry_naming.delete(0, "end")
-            self.entry_naming.insert(0, new_pattern)
-            self._on_input_changed()
+            if new_pattern != pattern:
+                self.entry_naming.delete(0, "end")
+                self.entry_naming.insert(0, new_pattern)
+                self._on_input_changed()
 
     def _insert_token(self, token_text: str, target: str = "folder"):
         if target == "file":
@@ -852,7 +714,7 @@ class ConfigPanel(ctk.CTkFrame):
                 fmt = length_str if (length_str and not length_str.isdigit()) else active_date_fmt
                 val = format_date(datetime.now(), fmt)
             elif token_name == "Project":
-                val = "FilmProject"
+                val = self.entry_project_name.get().strip() or "FilmProject"
             elif token_name == "Destination":
                 val = "Output_Root"
             else:
@@ -944,17 +806,20 @@ class ConfigPanel(ctk.CTkFrame):
         file_pattern = self.entry_naming.get().strip() or "{Camera:1}{Roll:3}C{Clip:3}_{Date:YYMMDD}"
         folder_pattern = self.entry_folder.get().strip() or "{Destination}/Footage/{Camera}/Roll_{Roll}/"
         current_dests = tuple(self.destinations)
+        current_project_name = self.entry_project_name.get().strip()
 
         if (
             file_pattern == getattr(self, "_last_rendered_file_pattern", None) and
             folder_pattern == getattr(self, "_last_rendered_folder_pattern", None) and
-            current_dests == getattr(self, "_last_rendered_dests", None)
+            current_dests == getattr(self, "_last_rendered_dests", None) and
+            current_project_name == getattr(self, "_last_rendered_project_name", None)
         ):
             return
 
         self._last_rendered_file_pattern = file_pattern
         self._last_rendered_folder_pattern = folder_pattern
         self._last_rendered_dests = current_dests
+        self._last_rendered_project_name = current_project_name
 
         # Generate 3 sample files
         sample_files = [self._generate_sample_filename(file_pattern, i) for i in (1, 2, 3)]
@@ -1056,7 +921,7 @@ class ConfigPanel(ctk.CTkFrame):
             "Camera": "A",
             "Roll": "001",
             "Date": format_date(datetime.now(), self._get_selected_date_format()),
-            "Project": "FilmProject",
+            "Project": self.entry_project_name.get().strip() or "FilmProject",
             "Clip": "001",
             "UID": "BB"
         }
@@ -1132,15 +997,21 @@ class ConfigPanel(ctk.CTkFrame):
         buf_str = self.combo_buffer.get().replace("MB", "").strip()
         buf_mb = int(buf_str) if buf_str.isdigit() else 64
 
+        raw_exts = self.entry_blacklist.get().strip()
+        ext_list = [e.strip() for e in raw_exts.split(",") if e.strip()] if raw_exts else []
+
         return {
             "name": self.entry_preset_name.get().strip(),
             "description": self.entry_preset_desc.get().strip(),
+            "project_name": self.entry_project_name.get().strip() or "Film Project",
             "naming_rule": self.entry_naming.get().strip(),
             "folder_template": self.entry_folder.get().strip(),
             "date_format": self._get_selected_date_format(),
             "hash_algorithm": self.combo_hash.get(),
             "log_format": self.combo_log.get(),
-            "buffer_size_mb": buf_mb
+            "buffer_size_mb": buf_mb,
+            "file_extension_blacklist": ext_list,
+            "suppress_output_reports": bool(self.switch_suppress_reports.get())
         }
 
     def apply_preset(self, preset_dict: dict):
@@ -1150,6 +1021,14 @@ class ConfigPanel(ctk.CTkFrame):
         if "description" in preset_dict:
             self.entry_preset_desc.delete(0, "end")
             self.entry_preset_desc.insert(0, preset_dict.get("description", ""))
+        else:
+            self.entry_preset_desc.delete(0, "end")
+        if "project_name" in preset_dict:
+            self.entry_project_name.delete(0, "end")
+            self.entry_project_name.insert(0, preset_dict["project_name"])
+        else:
+            self.entry_project_name.delete(0, "end")
+            self.entry_project_name.insert(0, "Film Project")
         if "naming_rule" in preset_dict:
             self.entry_naming.delete(0, "end")
             self.entry_naming.insert(0, preset_dict["naming_rule"])
@@ -1164,9 +1043,20 @@ class ConfigPanel(ctk.CTkFrame):
             self.combo_log.set(preset_dict["log_format"])
         if "buffer_size_mb" in preset_dict:
             self.combo_buffer.set(f"{preset_dict['buffer_size_mb']}MB")
+        if "file_extension_blacklist" in preset_dict:
+            ext_list = preset_dict["file_extension_blacklist"]
+            if isinstance(ext_list, list):
+                self.entry_blacklist.delete(0, "end")
+                self.entry_blacklist.insert(0, ", ".join(ext_list))
+        else:
+            self.entry_blacklist.delete(0, "end")
+        if "suppress_output_reports" in preset_dict:
+            self.switch_suppress_reports.select() if preset_dict["suppress_output_reports"] else self.switch_suppress_reports.deselect()
+        else:
+            self.switch_suppress_reports.deselect()
         self._on_input_changed()
 
-    def _load_presets_to_combo(self, select_name: str = None):
+    def _load_presets_to_combo(self, select_name: str = None, apply_to_ui: bool = True):
         """Reload list of presets from preset_manager into dropdown."""
         presets = self.preset_manager.list_presets()
         if not presets:
@@ -1177,7 +1067,9 @@ class ConfigPanel(ctk.CTkFrame):
             self.combo_presets.configure(values=presets)
             target = select_name if select_name in presets else presets[0]
             self.combo_presets.set(target)
-            self._on_preset_dropdown_selected(target)
+            self.current_loaded_preset_name = target
+            if apply_to_ui:
+                self._on_preset_dropdown_selected(target)
 
     def _on_preset_dropdown_selected(self, preset_name: str):
         if not preset_name or preset_name == "(Không có preset)":
@@ -1200,7 +1092,10 @@ class ConfigPanel(ctk.CTkFrame):
 
         if self.preset_manager.save_preset(config, old_name=self.current_loaded_preset_name):
             self.current_loaded_preset_name = name
-            self._load_presets_to_combo(select_name=name)
+            self._load_presets_to_combo(select_name=name, apply_to_ui=False)
+        else:
+            from tkinter import messagebox
+            messagebox.showerror("Lỗi Lưu Preset", f"Không thể lưu preset '{name}'. Vui lòng kiểm tra quyền truy cập thư mục presets.")
 
     def _on_save_as_new_preset_clicked(self):
         """Open dialog to prompt for a new preset name."""
@@ -1213,7 +1108,7 @@ class ConfigPanel(ctk.CTkFrame):
 
         if self.preset_manager.save_preset(config):
             self.current_loaded_preset_name = name
-            self._load_presets_to_combo(select_name=name)
+            self._load_presets_to_combo(select_name=name, apply_to_ui=False)
 
     def _on_delete_preset_clicked(self):
         """Open delete confirmation dialog for currently selected preset."""
@@ -1255,8 +1150,11 @@ class ConfigPanel(ctk.CTkFrame):
         if file_path:
             config = self.get_config()
             config["name"] = preset_name
-            self.preset_manager.save_preset(config)
-            self.preset_manager.export_preset(preset_name, file_path)
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logger.error(f"Failed to export preset to {file_path}: {e}")
 
 
 

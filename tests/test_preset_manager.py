@@ -109,6 +109,24 @@ class TestPresetManager(unittest.TestCase):
         finally:
             shutil.rmtree(export_dir, ignore_errors=True)
 
+    def test_preset_with_special_characters(self):
+        preset_data = {
+            "name": "Sony FX6 / FX9 Standard Custom",
+            "naming_rule": "{Camera:1}{Roll:3}",
+            "folder_template": "{Destination}/Footage/",
+            "hash_algorithm": "MD5",
+            "log_format": "TXT",
+            "buffer_size_mb": 64
+        }
+        saved = self.preset_mgr.save_preset(preset_data)
+        self.assertTrue(saved)
+        self.assertIn("Sony FX6 / FX9 Standard Custom", self.preset_mgr.list_presets())
+        
+        loaded = self.preset_mgr.load_preset("Sony FX6 / FX9 Standard Custom")
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.get("name"), "Sony FX6 / FX9 Standard Custom")
+
+
 
 if __name__ == "__main__":
     unittest.main()

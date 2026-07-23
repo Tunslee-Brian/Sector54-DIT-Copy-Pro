@@ -26,4 +26,11 @@ COLOR_COPYING = "#2d7ff9"    # Blue ▶
 COLOR_QUEUED = "#686870"     # Gray ░
 COLOR_FAILED = "#ff3b30"     # Red ✗
 
-FONT_FAMILY = "Segoe UI"
+import sys
+
+if sys.platform == "win32":
+    FONT_FAMILY = "Segoe UI"
+elif sys.platform == "darwin":
+    FONT_FAMILY = "Helvetica Neue"
+else:
+    FONT_FAMILY = "DejaVu Sans"

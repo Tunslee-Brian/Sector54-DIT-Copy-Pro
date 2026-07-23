@@ -8,13 +8,21 @@ from typing import List, Dict, Callable, Optional
 from core.token_parser import TokenParser
 from core.directory_builder import DirectoryBuilder
 from core.verify_engine import VerifyEngine
+from core.logger_config import logger
 
 
 def _advise_dontneed(fd: int):
-    """Bypasses OS Page Cache on Linux to prevent RAM saturation when copying massive media files."""
+    """Bypasses OS Page Cache to prevent RAM saturation when copying massive media files."""
     if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
         try:
             os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        except Exception as e:
+            logger.debug(f"posix_fadvise DONTNEED failed for fd {fd}: {e}")
+    else:
+        try:
+            import fcntl
+            F_NOCACHE = getattr(fcntl, "F_NOCACHE", 48)
+            fcntl.fcntl(fd, F_NOCACHE, 1)
         except Exception:
             pass
 
@@ -36,15 +44,19 @@ class CopyEngine:
         hash_algorithm: str = "MD5",
         buffer_size_mb: int = 64,
         project_name: str = "Project",
-        session_file: Optional[str] = None
+        session_file: Optional[str] = None,
+        file_extension_blacklist: Optional[List[str]] = None,
+        suppress_output_reports: bool = False
     ):
-        self.source_dir = os.path.abspath(source_dir)
-        self.destinations = [os.path.abspath(d) for d in destinations if d and d.strip()]
+        self.source_dir = os.path.realpath(source_dir)
+        self.destinations = [os.path.realpath(d) for d in destinations if d and d.strip()]
         self.token_parser = token_parser
         self.directory_builder = directory_builder
         self.hash_algorithm = hash_algorithm
         self.buffer_size = max(1, buffer_size_mb) * 1024 * 1024
         self.project_name = project_name
+        self.file_extension_blacklist = [e.lower() if e.startswith(".") else f".{e.lower()}" for e in (file_extension_blacklist or []) if e.strip()]
+        self.suppress_output_reports = suppress_output_reports
 
         if not VerifyEngine.is_algorithm_available(hash_algorithm):
             raise ImportError(
@@ -63,7 +75,9 @@ class CopyEngine:
         self.cancel_requested = False
         self.is_running = False
         self._progress_lock = threading.Lock()
+        self._session_lock = threading.RLock()
         self._session_cache: Optional[Dict] = None
+        self._last_session_save_time = 0.0
 
         self.file_list: List[Dict] = []
         self.extra_files: List[Dict] = []
@@ -71,15 +85,38 @@ class CopyEngine:
         self.copied_bytes = 0
         self.start_time = 0.0
         self.end_time = 0.0
+        self.folder_count = 0
+
+        # Thread-safe speed / ETA tracking variables
+        self.last_speed_calc_time = 0.0
+        self.bytes_since_last_speed_calc = 0
+        self.current_speed = 0.0
+
+    def _update_progress(self, chunk_len: int) -> Tuple[float, float]:
+        """Updates progress state thread-safely and returns (current_speed, eta)."""
+        with self._progress_lock:
+            self.copied_bytes += chunk_len
+            self.bytes_since_last_speed_calc += chunk_len
+            now = time.time()
+            dt = now - self.last_speed_calc_time
+            if dt >= 0.5:
+                self.current_speed = self.bytes_since_last_speed_calc / dt
+                self.last_speed_calc_time = now
+                self.bytes_since_last_speed_calc = 0
+            remaining_bytes = max(0, self.total_bytes - self.copied_bytes)
+            eta = remaining_bytes / self.current_speed if self.current_speed > 0 else 0.0
+            return self.current_speed, eta
 
     def check_free_space(self) -> Dict[str, Dict]:
         """
         Checks available free disk space on each destination root against total_bytes.
-        Returns a dict mapping dest_root -> {"free_bytes": int, "required_bytes": int, "sufficient": bool}.
+        Returns a dict mapping dest_root -> {"free_bytes": int, "required_bytes": int, "sufficient": bool, "error": str}.
         """
         import shutil
         result = {}
         for dest in self.destinations:
+            free = -1
+            error_msg = None
             try:
                 check_path = dest
                 while check_path and not os.path.exists(check_path):
@@ -89,15 +126,29 @@ class CopyEngine:
                     check_path = parent
                 if not check_path or not os.path.exists(check_path):
                     check_path = "/"
-                usage = shutil.disk_usage(check_path)
-                free = usage.free
-            except Exception:
-                free = -1
-            sufficient = (free >= self.total_bytes) if free >= 0 else True
+                
+                try:
+                    usage = shutil.disk_usage(check_path)
+                    free = usage.free
+                except PermissionError:
+                    error_msg = "Permission Denied"
+                except Exception as e:
+                    error_msg = str(e)
+            except PermissionError:
+                error_msg = "Permission Denied"
+            except Exception as e:
+                error_msg = str(e)
+
+            if error_msg == "Permission Denied":
+                sufficient = False
+            else:
+                sufficient = (free >= self.total_bytes) if free >= 0 else True
+
             result[dest] = {
                 "free_bytes": free,
                 "required_bytes": self.total_bytes,
-                "sufficient": sufficient
+                "sufficient": sufficient,
+                "error": error_msg
             }
         return result
 
@@ -156,6 +207,11 @@ class CopyEngine:
                 # Ignore hidden files / metadata files
                 if filename.startswith(".") or filename.endswith((".DS_Store", "desktop.ini")):
                     continue
+                # Skip blacklisted file extensions
+                if self.file_extension_blacklist:
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext in self.file_extension_blacklist:
+                        continue
 
                 full_source_path = os.path.join(root, filename)
                 rel_path = os.path.relpath(full_source_path, self.source_dir)
@@ -256,6 +312,9 @@ class CopyEngine:
             if on_file_complete:
                 on_file_complete(file_info)
 
+        if self.file_list:
+            self._save_file_session_state(self.file_list[-1], force=True)
+
         self.end_time = time.time()
         self.is_running = False
 
@@ -332,8 +391,23 @@ class CopyEngine:
         failed_count = 0
 
         is_size_only = (self.hash_algorithm.upper() == "SIZE-ONLY")
-        num_dests = len(self.destinations) if self.destinations else 1
-        total_work_bytes = self.total_bytes * (1 if is_size_only else (1 + num_dests))
+        if is_size_only:
+            total_work_bytes = self.total_bytes
+        else:
+            total_work_bytes = 0
+            for file_info in self.file_list:
+                file_size = file_info["size"]
+                total_work_bytes += file_size
+                for dst in file_info["dest_paths"]:
+                    if os.path.exists(dst):
+                        total_work_bytes += file_size
+        if total_work_bytes == 0:
+            total_work_bytes = 1
+
+        self.total_bytes = total_work_bytes
+        self.last_speed_calc_time = time.time()
+        self.bytes_since_last_speed_calc = 0
+        self.current_speed = 0.0
 
         for file_info in self.file_list:
             if self.cancel_requested:
@@ -362,46 +436,34 @@ class CopyEngine:
                     on_file_complete(file_info)
                 continue
 
-            last_calc_time = time.time()
-            bytes_since_last_calc = 0
-            current_speed = 0.0
+            file_bytes_read = 0
 
             def src_callback(chunk_len):
-                nonlocal last_calc_time, bytes_since_last_calc, current_speed
-                with self._progress_lock:
-                    self.copied_bytes += chunk_len
-                    bytes_since_last_calc += chunk_len
-                    now = time.time()
-                    dt = now - last_calc_time
-                    if dt >= 0.5:
-                        current_speed = bytes_since_last_calc / dt
-                        last_calc_time = now
-                        bytes_since_last_calc = 0
-                    remaining_bytes = max(0, total_work_bytes - self.copied_bytes)
-                    eta = remaining_bytes / current_speed if current_speed > 0 else 0.0
-                    eff_speed = current_speed
+                nonlocal file_bytes_read
+                file_bytes_read += chunk_len
+                eff_speed, eta = self._update_progress(chunk_len)
                 if on_file_progress:
-                    on_file_progress(file_info, min(self.total_bytes, self.copied_bytes), eff_speed, eta)
+                    on_file_progress(file_info, file_bytes_read, eff_speed, eta)
 
-            def dst_verify_callback(chunk_len):
-                nonlocal last_calc_time, bytes_since_last_calc, current_speed
-                with self._progress_lock:
-                    self.copied_bytes += chunk_len
-                    bytes_since_last_calc += chunk_len
-                    now = time.time()
-                    dt = now - last_calc_time
-                    if dt >= 0.5:
-                        current_speed = bytes_since_last_calc / dt
-                        last_calc_time = now
-                        bytes_since_last_calc = 0
-                    remaining_bytes = max(0, total_work_bytes - self.copied_bytes)
-                    eta = remaining_bytes / current_speed if current_speed > 0 else 0.0
-                    eff_speed = current_speed
-                if on_file_progress:
-                    on_file_progress(file_info, min(self.total_bytes, self.copied_bytes), eff_speed, eta)
+            dst_progress_lock = threading.Lock()
+            dst_bytes_read = {}
+
+            def make_dst_callback(dst_path):
+                dst_bytes_read[dst_path] = 0
+                def dst_verify_callback(chunk_len):
+                    with dst_progress_lock:
+                        dst_bytes_read[dst_path] += chunk_len
+                        avg_file_bytes = sum(dst_bytes_read.values()) / max(1, len(dest_paths))
+                    eff_speed, eta = self._update_progress(chunk_len)
+                    if on_file_progress:
+                        on_file_progress(file_info, int(avg_file_bytes), eff_speed, eta)
+                return dst_verify_callback
 
             if is_size_only:
                 source_hash = str(file_size)
+                eff_speed, eta = self._update_progress(file_size)
+                if on_file_progress:
+                    on_file_progress(file_info, file_size, eff_speed, eta)
             else:
                 source_hash = VerifyEngine.compute_file_hash(src_path, self.hash_algorithm, self.buffer_size, callback=src_callback)
 
@@ -416,8 +478,11 @@ class CopyEngine:
                     return dst_path, "MISSING", False, f"Destination file missing: {dst_path}"
                 if is_size_only:
                     dst_h = str(os.path.getsize(dst_path))
+                    eff_speed, eta = self._update_progress(file_size)
+                    if on_file_progress:
+                        on_file_progress(file_info, file_size, eff_speed, eta)
                 else:
-                    dst_h = VerifyEngine.compute_file_hash(dst_path, self.hash_algorithm, self.buffer_size, callback=dst_verify_callback)
+                    dst_h = VerifyEngine.compute_file_hash(dst_path, self.hash_algorithm, self.buffer_size, callback=make_dst_callback(dst_path))
                 matched = VerifyEngine.verify_copy(source_hash, dst_h, self.hash_algorithm)
                 err = "" if matched else f"Checksum mismatch for destination: {dst_path}"
                 return dst_path, dst_h, matched, err
@@ -449,6 +514,9 @@ class CopyEngine:
 
             if on_file_complete:
                 on_file_complete(file_info)
+
+        if self.file_list:
+            self._save_file_session_state(self.file_list[-1], force=True)
 
         self.end_time = time.time()
         self.is_running = False
@@ -518,7 +586,11 @@ class CopyEngine:
             def reader_worker():
                 try:
                     while not self.cancel_requested:
+                        if self.cancel_requested:
+                            break
                         chunk = src_file.read(self.buffer_size)
+                        if self.cancel_requested:
+                            break
                         if not chunk:
                             while not self.cancel_requested:
                                 try:
@@ -527,7 +599,6 @@ class CopyEngine:
                                 except queue.Full:
                                     pass
                             break
-                        _advise_dontneed(src_file.fileno())
                         put_success = False
                         while not self.cancel_requested:
                             try:
@@ -536,7 +607,7 @@ class CopyEngine:
                                 break
                             except queue.Full:
                                 pass
-                        if not put_success:
+                        if not put_success or self.cancel_requested:
                             break
                 except Exception as ex:
                     try:
@@ -571,23 +642,10 @@ class CopyEngine:
                 # Write chunk simultaneously to all destination files
                 for dst_f in dest_files:
                     dst_f.write(chunk)
-                    _advise_dontneed(dst_f.fileno())
 
                 chunk_len = len(chunk)
                 file_bytes_read += chunk_len
-                self.copied_bytes += chunk_len
-                bytes_since_last_calc += chunk_len
-
-                # Speed and ETA calculation
-                now = time.time()
-                dt = now - last_calc_time
-                if dt >= 0.5:
-                    current_speed = bytes_since_last_calc / dt
-                    last_calc_time = now
-                    bytes_since_last_calc = 0
-
-                remaining_bytes = max(0, self.total_bytes - self.copied_bytes)
-                eta_seconds = remaining_bytes / current_speed if current_speed > 0 else 0.0
+                current_speed, eta_seconds = self._update_progress(chunk_len)
 
                 if on_file_progress:
                     on_file_progress(file_info, file_bytes_read, current_speed, eta_seconds)
@@ -607,12 +665,14 @@ class CopyEngine:
                 reader_thread.join(timeout=1.0)
             if src_file and not src_file.closed:
                 try:
+                    _advise_dontneed(src_file.fileno())
                     src_file.close()
                 except Exception:
                     pass
             for dst_f in dest_files:
                 if not dst_f.closed:
                     try:
+                        _advise_dontneed(dst_f.fileno())
                         dst_f.close()
                     except Exception:
                         pass
@@ -631,20 +691,25 @@ class CopyEngine:
         all_matched = True
         file_info["dest_hashes"] = {}
 
+        verify_progress_lock = threading.Lock()
+        verify_last_calc_time = time.time()
+        verify_bytes_since_last_calc = 0
+        verify_current_speed = 0.0
+
         def dst_callback(chunk_len):
-            nonlocal last_calc_time, bytes_since_last_calc, current_speed
-            with self._progress_lock:
-                bytes_since_last_calc += chunk_len
+            nonlocal verify_last_calc_time, verify_bytes_since_last_calc, verify_current_speed
+            with verify_progress_lock:
+                verify_bytes_since_last_calc += chunk_len
                 now = time.time()
-                dt = now - last_calc_time
+                dt = now - verify_last_calc_time
                 if dt >= 0.5:
-                    current_speed = bytes_since_last_calc / dt
-                    last_calc_time = now
-                    bytes_since_last_calc = 0
+                    verify_current_speed = verify_bytes_since_last_calc / dt
+                    verify_last_calc_time = now
+                    verify_bytes_since_last_calc = 0
                 
                 elapsed_total = max(0.1, now - self.start_time)
                 avg_speed = self.copied_bytes / elapsed_total
-                effective_speed = max(current_speed, avg_speed)
+                effective_speed = max(verify_current_speed, avg_speed)
                 remaining_bytes = max(0, self.total_bytes - self.copied_bytes)
                 eta = remaining_bytes / effective_speed if effective_speed > 0 else 0.0
 
@@ -667,6 +732,7 @@ class CopyEngine:
             if not matched:
                 all_matched = False
                 file_info["error_msg"] = err
+                self._cleanup_partial_files([dst])
         else:
             with ThreadPoolExecutor(max_workers=min(4, len(dest_paths))) as executor:
                 futures = [executor.submit(verify_dst_task, dst) for dst in dest_paths]
@@ -676,9 +742,7 @@ class CopyEngine:
                     if not matched:
                         all_matched = False
                         file_info["error_msg"] = err
-
-        if not all_matched:
-            self._cleanup_partial_files(dest_paths)
+                        self._cleanup_partial_files([dst])
 
         return all_matched
 
@@ -690,38 +754,62 @@ class CopyEngine:
                     os.remove(dst)
                 except Exception:
                     pass
+            # Clean up empty parent directories up to the destination root
+            parent = os.path.dirname(dst)
+            dest_root = None
+            for root in self.destinations:
+                if parent.startswith(root):
+                    dest_root = root
+                    break
+            
+            if dest_root:
+                while parent and parent != dest_root and len(parent) > len(dest_root):
+                    try:
+                        if os.path.exists(parent) and os.path.isdir(parent) and not os.listdir(parent):
+                            os.rmdir(parent)
+                            parent = os.path.dirname(parent)
+                        else:
+                            break
+                    except Exception:
+                        break
 
     def cancel(self):
         self.cancel_requested = True
 
     def _load_session_state(self) -> Dict:
-        if self._session_cache is not None:
+        with self._session_lock:
+            if self._session_cache is not None:
+                return self._session_cache
+            if self.session_file and os.path.exists(self.session_file):
+                try:
+                    with open(self.session_file, "r", encoding="utf-8") as f:
+                        self._session_cache = json.load(f)
+                        return self._session_cache
+                except Exception as e:
+                    logger.warning(f"Failed to load session state from {self.session_file}: {e}")
+            self._session_cache = {}
             return self._session_cache
-        if self.session_file and os.path.exists(self.session_file):
-            try:
-                with open(self.session_file, "r", encoding="utf-8") as f:
-                    self._session_cache = json.load(f)
-                    return self._session_cache
-            except Exception:
-                pass
-        self._session_cache = {}
-        return self._session_cache
 
-    def _save_file_session_state(self, file_info: Dict):
-        if not self.session_file:
+    def _save_file_session_state(self, file_info: Dict, force: bool = False):
+        if not self.session_file or self.suppress_output_reports:
             return
         try:
             session_dir = os.path.dirname(os.path.abspath(self.session_file))
             os.makedirs(session_dir, exist_ok=True)
-            if self._session_cache is None:
-                self._session_cache = self._load_session_state()
-            self._session_cache[file_info["rel_path"]] = {
-                "status": file_info["status"],
-                "source_hash": file_info["source_hash"],
-                "dest_hashes": file_info["dest_hashes"],
-                "shot_time": file_info["shot_time"]
-            }
-            with open(self.session_file, "w", encoding="utf-8") as f:
-                json.dump(self._session_cache, f, indent=2)
-        except Exception:
-            pass
+            with self._session_lock:
+                if self._session_cache is None:
+                    self._session_cache = self._load_session_state()
+                self._session_cache[file_info["rel_path"]] = {
+                    "status": file_info["status"],
+                    "source_hash": file_info["source_hash"],
+                    "dest_hashes": file_info["dest_hashes"],
+                    "shot_time": file_info["shot_time"]
+                }
+                now = time.time()
+                last_save = getattr(self, "_last_session_save_time", 0.0)
+                if force or (now - last_save >= 2.0):
+                    with open(self.session_file, "w", encoding="utf-8") as f:
+                        json.dump(self._session_cache, f, indent=2)
+                    self._last_session_save_time = now
+        except Exception as e:
+            logger.warning(f"Failed to save copy session state to {self.session_file}: {e}")

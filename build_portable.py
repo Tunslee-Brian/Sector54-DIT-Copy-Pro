@@ -51,6 +51,7 @@ def main():
         "--name", "DIT_Copy_Pro",
         "--clean",
         "--collect-all", "customtkinter",
+        "--collect-all", "tkinterdnd2",
         f"--add-data=finish.mp3{separator}.",
         f"--add-data=presets{separator}presets",
         "main.py"
@@ -125,6 +126,7 @@ def main():
     # Make binary executable on Linux
     if not is_win:
         try:
+            dest_exe = os.path.join(portable_folder, exe_name)
             os.chmod(dest_exe, 0o755)
         except Exception:
             pass

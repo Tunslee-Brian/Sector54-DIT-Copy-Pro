@@ -1,8 +1,12 @@
+import sys
 import os
 import time
 import subprocess
 from datetime import datetime
 from PIL import Image, ExifTags
+
+
+from core.logger_config import logger
 
 
 class MetadataReader:
@@ -37,8 +41,8 @@ class MetadataReader:
                     raw_time = res.stdout.strip().split("\n")[0].replace("Z", "")
                     dt = datetime.fromisoformat(raw_time)
                     return dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"ffprobe extraction fallback for {filepath}: {e}")
 
         # 2. Try PIL EXIF for image formats
         if ext in (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".dng"):
@@ -51,14 +55,15 @@ class MetadataReader:
                             if tag_name in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
                                 dt = datetime.strptime(str(val), "%Y:%m:%d %H:%M:%S")
                                 return dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"PIL EXIF extraction fallback for {filepath}: {e}")
 
         # 3. Fallback to filesystem modification time
         try:
             stat = os.stat(filepath)
             mtime = stat.st_mtime
             return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Stat modification time fallback for {filepath}: {e}")
             return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 

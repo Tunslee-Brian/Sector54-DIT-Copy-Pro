@@ -15,6 +15,8 @@ class ShotPutProgressPanel(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.start_time = None
+        self._last_copied_bytes = 0
+        self._last_total_bytes = 0
         self._build_ui()
 
     def _build_ui(self):

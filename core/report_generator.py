@@ -1,4 +1,5 @@
 import os
+import html
 from datetime import datetime
 from typing import List, Dict
 
@@ -9,11 +10,12 @@ class ReportGenerator:
 
     @staticmethod
     def format_size(bytes_num: int) -> str:
+        size = float(bytes_num)
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if abs(bytes_num) < 1024.0:
-                return f"{bytes_num:3.2f} {unit}"
-            bytes_num /= 1024.0
-        return f"{bytes_num:.2f} PB"
+            if abs(size) < 1024.0:
+                return f"{size:3.2f} {unit}"
+            size /= 1024.0
+        return f"{size:.2f} PB"
 
     @staticmethod
     def format_time(seconds: float) -> str:
@@ -167,19 +169,24 @@ class ReportGenerator:
         elapsed_str = cls.format_time(summary.get("elapsed_seconds", 0))
         speed_str = cls.format_size(int(summary.get("avg_speed_bytes_sec", 0)))
 
+        eproj = html.escape(project_name)
+        epres = html.escape(preset_name)
+        esrc = html.escape(source_dir)
+        ehash = html.escape(hash_algorithm)
+
         status_class = "status-pass" if failed_count == 0 else "status-fail"
         status_banner = "PASSED 100%" if failed_count == 0 else "FAILED / CHECKSUM MISMATCH"
 
         rows_html = []
         for f in file_list:
-            fname = f.get("filename", "")
+            fname = html.escape(f.get("filename", ""))
             fsize = cls.format_size(f.get("size", 0))
-            stime = f.get("shot_time", "N/A")
-            shash = f.get("source_hash", "N/A")
+            stime = html.escape(f.get("shot_time", "N/A"))
+            shash = html.escape(f.get("source_hash", "N/A"))
             status = f.get("status", "QUEUED")
 
             badge_cls = "badge-pass" if status == "VERIFIED" else "badge-fail" if status == "FAILED" else "badge-warn"
-            badge_text = "VERIFIED ✓" if status == "VERIFIED" else "FAILED ✗" if status == "FAILED" else status
+            badge_text = "VERIFIED ✓" if status == "VERIFIED" else "FAILED ✗" if status == "FAILED" else html.escape(status)
 
             rows_html.append(f"""
             <tr>
@@ -193,9 +200,9 @@ class ReportGenerator:
 
         extra_rows_html = []
         for ef in extra_files:
-            ef_name = ef.get("filename", "")
+            ef_name = html.escape(ef.get("filename", ""))
             ef_size = cls.format_size(ef.get("size", 0))
-            ef_path = ef.get("dest_path", "")
+            ef_path = html.escape(ef.get("dest_path", ""))
             extra_rows_html.append(f"""
             <tr>
                 <td><code>{ef_name}</code></td>
@@ -204,14 +211,38 @@ class ReportGenerator:
             </tr>
             """)
 
-        dest_list_html = "".join([f"<li><code>{d}</code></li>" for d in destinations])
+        dest_list_html = "".join([f"<li><code>{html.escape(d)}</code></li>" for d in destinations])
+
+        # Localization dictionary for the report labels (can be expanded for other languages)
+        labels = {
+            "title": "DIT COPY REPORT",
+            "project": "Dự án",
+            "preset": "Preset",
+            "total_files": "Tổng số Tệp",
+            "verified": "Đã Xác Thực",
+            "checksum_errors": "Lỗi Checksum",
+            "total_size": "Tổng Dung Lượng",
+            "time_speed": "Thời Gian & Tốc Độ",
+            "report_time": "Thời gian báo cáo",
+            "checksum_algorithm": "Thuật toán Checksum",
+            "source_dir": "Thẻ Nguồn (Source)",
+            "dest_dirs": "Các Thư Mục Đích (Destinations)",
+            "checked_files_list": "Danh Sách File Đã Kiểm Tra",
+            "filename": "Tên Tập Tin",
+            "size": "Kích Thước",
+            "shot_time": "Thời Gian Shot",
+            "source_hash": "Source Hash",
+            "status": "Trạng Thái",
+            "extra_files_title": "File Thừa ở Ổ Đích (Extra / Orphan Files)",
+            "dest_path": "Đường Dẫn Đích"
+        }
 
         html_content = f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DIT Copy Report — {project_name}</title>
+    <title>DIT Copy Report — {eproj}</title>
     <style>
         :root {{
             --bg-dark: #0f111a;
@@ -337,54 +368,54 @@ class ReportGenerator:
     <div class="container">
         <div class="header">
             <div>
-                <h1>🎬 DIT COPY REPORT</h1>
-                <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Dự án: <strong>{project_name}</strong> | Preset: <strong>{preset_name}</strong></div>
+                <h1>🎬 {labels["title"]}</h1>
+                <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">{labels["project"]}: <strong>{eproj}</strong> | {labels["preset"]}: <strong>{epres}</strong></div>
             </div>
             <div class="status-banner {status_class}">{status_banner}</div>
         </div>
 
         <div class="metrics-grid">
             <div class="metric-card">
-                <div class="label">Tổng số Tệp</div>
+                <div class="label">{labels["total_files"]}</div>
                 <div class="value">{total_files}</div>
             </div>
             <div class="metric-card">
-                <div class="label">Đã Xác Thực</div>
+                <div class="label">{labels["verified"]}</div>
                 <div class="value" style="color: var(--accent-green);">{verified_count}</div>
             </div>
             <div class="metric-card">
-                <div class="label">Lỗi Checksum</div>
+                <div class="label">{labels["checksum_errors"]}</div>
                 <div class="value" style="color: var(--accent-red);">{failed_count}</div>
             </div>
             <div class="metric-card">
-                <div class="label">Tổng Dung Lượng</div>
+                <div class="label">{labels["total_size"]}</div>
                 <div class="value">{total_size_str}</div>
             </div>
             <div class="metric-card">
-                <div class="label">Thời Gian & Tốc Độ</div>
+                <div class="label">{labels["time_speed"]}</div>
                 <div class="value" style="font-size: 16px;">{elapsed_str} (~{speed_str}/s)</div>
             </div>
         </div>
 
         <div class="info-section">
-            <div><strong>Thời gian báo cáo:</strong> {now_str}</div>
-            <div><strong>Thuật toán Checksum:</strong> <code>{hash_algorithm}</code></div>
-            <div><strong>Thẻ Nguồn (Source):</strong> <code>{source_dir}</code></div>
-            <div><strong>Các Thư Mục Đích (Destinations):</strong></div>
+            <div><strong>{labels["report_time"]}:</strong> {now_str}</div>
+            <div><strong>{labels["checksum_algorithm"]}:</strong> <code>{ehash}</code></div>
+            <div><strong>{labels["source_dir"]}:</strong> <code>{esrc}</code></div>
+            <div><strong>{labels["dest_dirs"]}:</strong></div>
             <ul style="margin: 4px 0 0 20px; padding: 0;">
                 {dest_list_html}
             </ul>
         </div>
 
-        <h2>📄 Danh Sách File Đã Kiểm Tra</h2>
+        <h2>📄 {labels["checked_files_list"]}</h2>
         <table>
             <thead>
                 <tr>
-                    <th>Tên Tập Tin</th>
-                    <th>Kích Thước</th>
-                    <th>Thời Gian Shot</th>
-                    <th>Source Hash</th>
-                    <th>Trạng Thái</th>
+                    <th>{labels["filename"]}</th>
+                    <th>{labels["size"]}</th>
+                    <th>{labels["shot_time"]}</th>
+                    <th>{labels["source_hash"]}</th>
+                    <th>{labels["status"]}</th>
                 </tr>
             </thead>
             <tbody>
@@ -393,13 +424,13 @@ class ReportGenerator:
         </table>
 
         {f'''
-        <h2 style="margin-top: 36px; color: var(--accent-yellow);">⚠️ File Thừa ở Ổ Đích (Extra / Orphan Files)</h2>
+        <h2 style="margin-top: 36px; color: var(--accent-yellow);">⚠️ {labels["extra_files_title"]}</h2>
         <table>
             <thead>
                 <tr>
-                    <th>Tên Tập Tin</th>
-                    <th>Kích Thước</th>
-                    <th>Đường Dẫn Đích</th>
+                    <th>{labels["filename"]}</th>
+                    <th>{labels["size"]}</th>
+                    <th>{labels["dest_path"]}</th>
                 </tr>
             </thead>
             <tbody>

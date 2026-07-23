@@ -1,9 +1,11 @@
 import os
+import sys
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import threading
 import subprocess
 import shutil
 from core.path_utils import get_sound_path
+from core.logger_config import logger
 
 class SoundPlayer:
     """
@@ -31,6 +33,7 @@ class SoundPlayer:
         def _play():
             try:
                 if not os.path.exists(self.finish_mp3_path):
+                    logger.warning(f"Audio file not found: {self.finish_mp3_path}")
                     return
 
                 # Select EXACTLY ONE player command using if/elif (NO LOOPING over multiple players)
@@ -51,8 +54,12 @@ class SoundPlayer:
                         kwargs = {}
                         if sys.platform == "win32":
                             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, **kwargs)
-                    except Exception:
+                        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, **kwargs)
+                        if res.returncode != 0:
+                            logger.warning(f"CLI audio playback returned non-zero code {res.returncode} ({cmd[0]})")
+                            cmd = None
+                    except Exception as e:
+                        logger.warning(f"CLI audio playback failed ({cmd[0]}): {e}")
                         cmd = None
 
                 if not cmd:
@@ -62,10 +69,10 @@ class SoundPlayer:
                             pygame.mixer.init()
                         pygame.mixer.music.load(self.finish_mp3_path)
                         pygame.mixer.music.play()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        logger.warning(f"Pygame mixer playback failed: {e}")
+            except Exception as e:
+                logger.error(f"Error in sound playback thread: {e}")
             finally:
                 with self._lock:
                     self._is_playing = False
@@ -76,7 +83,6 @@ class SoundPlayer:
         """
         Plays alert sound on failure.
         """
-        def _play():
-            print("\a", end="", flush=True)
-
-        threading.Thread(target=_play, daemon=True).start()
+        import sys
+        sys.stdout.write("\a")
+        sys.stdout.flush()
