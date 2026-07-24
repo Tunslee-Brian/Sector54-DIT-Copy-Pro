@@ -36,41 +36,40 @@ class SoundPlayer:
                     logger.warning(f"Audio file not found: {self.finish_mp3_path}")
                     return
 
-                # Select EXACTLY ONE player command using if/elif (NO LOOPING over multiple players)
-                cmd = None
-                if shutil.which("mpg123"):
-                    cmd = ["mpg123", "-q", self.finish_mp3_path]
-                elif shutil.which("mpv"):
-                    cmd = ["mpv", "--no-video", "--really-quiet", self.finish_mp3_path]
-                elif shutil.which("ffplay"):
-                    cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", self.finish_mp3_path]
-                elif shutil.which("pw-play"):
-                    cmd = ["pw-play", self.finish_mp3_path]
-                elif shutil.which("afplay"):  # macOS
-                    cmd = ["afplay", self.finish_mp3_path]
+                # Try pygame mixer first (async, non-blocking — preferred on Windows)
+                played = False
+                try:
+                    import pygame.mixer
+                    if not pygame.mixer.get_init():
+                        pygame.mixer.init()
+                    pygame.mixer.music.load(self.finish_mp3_path)
+                    pygame.mixer.music.play()
+                    played = True
+                except Exception as e:
+                    logger.warning(f"Pygame mixer playback failed: {e}")
 
-                if cmd:
-                    try:
-                        kwargs = {}
-                        if sys.platform == "win32":
-                            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-                        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, **kwargs)
-                        if res.returncode != 0:
-                            logger.warning(f"CLI audio playback returned non-zero code {res.returncode} ({cmd[0]})")
-                            cmd = None
-                    except Exception as e:
-                        logger.warning(f"CLI audio playback failed ({cmd[0]}): {e}")
-                        cmd = None
+                # Fallback to CLI players only if pygame is unavailable
+                if not played:
+                    cmd = None
+                    if shutil.which("mpg123"):
+                        cmd = ["mpg123", "-q", self.finish_mp3_path]
+                    elif shutil.which("mpv"):
+                        cmd = ["mpv", "--no-video", "--really-quiet", self.finish_mp3_path]
+                    elif shutil.which("ffplay"):
+                        cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", self.finish_mp3_path]
+                    elif shutil.which("pw-play"):
+                        cmd = ["pw-play", self.finish_mp3_path]
+                    elif shutil.which("afplay"):
+                        cmd = ["afplay", self.finish_mp3_path]
 
-                if not cmd:
-                    try:
-                        import pygame.mixer
-                        if not pygame.mixer.get_init():
-                            pygame.mixer.init()
-                        pygame.mixer.music.load(self.finish_mp3_path)
-                        pygame.mixer.music.play()
-                    except Exception as e:
-                        logger.warning(f"Pygame mixer playback failed: {e}")
+                    if cmd:
+                        try:
+                            kwargs = {}
+                            if sys.platform == "win32":
+                                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+                            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, **kwargs)
+                        except Exception as e:
+                            logger.warning(f"CLI audio playback failed ({cmd[0]}): {e}")
             except Exception as e:
                 logger.error(f"Error in sound playback thread: {e}")
             finally:

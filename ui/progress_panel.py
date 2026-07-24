@@ -185,42 +185,19 @@ class ShotPutProgressPanel(ctk.CTkFrame):
         self.lbl_verify_stats.configure(text=f"0 / {file_count} Files Verified")
 
     def update_file_progress(self, filename: str, file_bytes_read: int, file_total_bytes: int, speed_bytes_sec: float, eta_sec: float):
-        """Update current file speed and remaining time."""
-        if self.start_time:
-            elapsed = max(0.1, time.time() - self.start_time)
-            m, s = divmod(int(elapsed), 60)
-            h, m = divmod(m, 60)
-            self.lbl_elapsed.configure(text=f"{h:02d}:{m:02d}:{s:02d}")
-
-            if speed_bytes_sec <= 0 and hasattr(self, "_last_copied_bytes") and self._last_copied_bytes > 0:
-                speed_bytes_sec = self._last_copied_bytes / elapsed
-
-            if eta_sec <= 0 and hasattr(self, "_last_copied_bytes") and hasattr(self, "_last_total_bytes"):
-                rem_bytes = max(0, self._last_total_bytes - self._last_copied_bytes)
-                if speed_bytes_sec > 0 and rem_bytes > 0:
-                    eta_sec = rem_bytes / speed_bytes_sec
-
-        if eta_sec > 0:
-            eta_m, eta_s = divmod(int(eta_sec), 60)
-            eta_h, eta_m = divmod(eta_m, 60)
-            self.lbl_remaining.configure(text=f"{eta_h:02d}:{eta_m:02d}:{eta_s:02d}")
-        else:
-            if hasattr(self, "_last_copied_bytes") and hasattr(self, "_last_total_bytes") and self._last_copied_bytes >= self._last_total_bytes:
-                self.lbl_remaining.configure(text="finishing up...")
-
-        if speed_bytes_sec > 0:
-            speed_mb = speed_bytes_sec / (1024 * 1024)
-            if speed_mb >= 1024:
-                self.lbl_speed.configure(text=f"{speed_mb / 1024:.2f} GB/s")
-            else:
-                self.lbl_speed.configure(text=f"{speed_mb:.1f} MB/s")
+        """Legacy single-progress update — delegates to update_both."""
+        self.update_both(filename, file_bytes_read, file_total_bytes, speed_bytes_sec, eta_sec,
+                         self._last_copied_bytes, self._last_total_bytes, 0, 0)
 
     def update_total_progress(self, copied_bytes: int, total_bytes: int, verified_files: int, total_files: int, metadata_pct: int = 0):
-        """Update Replication & Verify bars."""
+        """Legacy total-progress update — delegates to update_both."""
+        self.update_both("", 0, 0, 0.0, 0.0, copied_bytes, total_bytes, verified_files, total_files, metadata_pct)
+
+    def update_both(self, filename: str, file_bytes_read: int, file_total_bytes: int, speed_bytes_sec: float, eta_sec: float, copied_bytes: int, total_bytes: int, verified_files: int, total_files: int, metadata_pct: int = 0):
+        """Update file progress + total progress in a single call to avoid duplicate work."""
         self._last_copied_bytes = copied_bytes
         self._last_total_bytes = total_bytes
 
-        # Continuously update overall speed and remaining time if start_time is set
         if self.start_time:
             elapsed = max(0.1, time.time() - self.start_time)
             m, s = divmod(int(elapsed), 60)
@@ -229,12 +206,7 @@ class ShotPutProgressPanel(ctk.CTkFrame):
 
             avg_speed = copied_bytes / elapsed
             if avg_speed > 0:
-                speed_mb = avg_speed / (1024 * 1024)
-                if speed_mb >= 1024:
-                    self.lbl_speed.configure(text=f"{speed_mb / 1024:.2f} GB/s")
-                else:
-                    self.lbl_speed.configure(text=f"{speed_mb:.1f} MB/s")
-
+                self._update_speed(avg_speed)
                 rem_bytes = max(0, total_bytes - copied_bytes)
                 if rem_bytes > 0:
                     eta_sec = rem_bytes / avg_speed
@@ -243,6 +215,24 @@ class ShotPutProgressPanel(ctk.CTkFrame):
                     self.lbl_remaining.configure(text=f"{eta_h:02d}:{eta_m:02d}:{eta_s:02d}")
                 elif verified_files == total_files:
                     self.lbl_remaining.configure(text="finishing up...")
+            elif speed_bytes_sec > 0:
+                self._update_speed(speed_bytes_sec)
+                if eta_sec > 0:
+                    eta_m, eta_s = divmod(int(eta_sec), 60)
+                    eta_h, eta_m = divmod(eta_m, 60)
+                    self.lbl_remaining.configure(text=f"{eta_h:02d}:{eta_m:02d}:{eta_s:02d}")
+
+        self._update_bars(copied_bytes, total_bytes, verified_files, total_files, metadata_pct)
+
+    def _update_speed(self, speed_bytes_sec: float):
+        speed_mb = speed_bytes_sec / (1024 * 1024)
+        if speed_mb >= 1024:
+            self.lbl_speed.configure(text=f"{speed_mb / 1024:.2f} GB/s")
+        else:
+            self.lbl_speed.configure(text=f"{speed_mb:.1f} MB/s")
+
+    def _update_bars(self, copied_bytes: int, total_bytes: int, verified_files: int, total_files: int, metadata_pct: int = 0):
+        """Update Replication & Verify bars."""
 
         # 1. Replication progress
         repl_frac = copied_bytes / max(1, total_bytes)

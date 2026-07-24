@@ -36,6 +36,50 @@ class JobFlowPanel(ctk.CTkFrame):
         self._resize_timer_id = None
         self.draw_flow()
 
+    @staticmethod
+    def _detect_ram_gb() -> str:
+        try:
+            import psutil
+            ram_bytes = psutil.virtual_memory().total
+            return f"{round(ram_bytes / (1024**3))}"
+        except Exception:
+            pass
+        try:
+            import sys
+            if sys.platform == "win32":
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                class MEMORYSTATUSEX(ctypes.Structure):
+                    _fields_ = [
+                        ("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                    ]
+                mem = MEMORYSTATUSEX()
+                mem.dwLength = ctypes.sizeof(mem)
+                if kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
+                    return f"{round(mem.ullTotalPhys / (1024**3))}"
+            elif sys.platform == "linux":
+                with open("/proc/meminfo") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            kb = int(line.split()[1])
+                            return f"{round(kb / (1024**2))}"
+            elif sys.platform == "darwin":
+                import subprocess
+                res = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=2)
+                if res.returncode == 0 and res.stdout.strip():
+                    return f"{round(int(res.stdout.strip()) / (1024**3))}"
+        except Exception:
+            pass
+        return "16"
+
     def _init_host_info(self):
         """Retrieve host machine hardware/OS specs dynamically."""
         self.host_name = platform.node() or "Local Workstation"
@@ -55,13 +99,7 @@ class JobFlowPanel(ctk.CTkFrame):
         self.sys_info = f"{system} {release}"
         self.cpu_cores = os.cpu_count() or 4
 
-        self.ram_gb = "16"
-        try:
-            import psutil
-            ram_bytes = psutil.virtual_memory().total
-            self.ram_gb = f"{round(ram_bytes / (1024**3))}"
-        except Exception:
-            pass
+        self.ram_gb = self._detect_ram_gb()
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)

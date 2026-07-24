@@ -25,16 +25,19 @@ class TestSoundPlayer(unittest.TestCase):
             tmp_path = tmp.name
 
         try:
-            player = SoundPlayer(finish_mp3_path=tmp_path)
-            player.play_success()
-            # Wait briefly for daemon thread execution
-            import time
-            time.sleep(0.1)
-            self.assertTrue(mock_run.called or not player._is_playing)
+            with patch("pygame.mixer.music.play", side_effect=Exception("mock fail")):
+                player = SoundPlayer(finish_mp3_path=tmp_path)
+                player.play_success()
+                import time
+                time.sleep(0.1)
+                self.assertTrue(mock_run.called)
         finally:
-            os.remove(tmp_path)
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
-    @patch("shutil.which")
+    @patch("core.sound_player.shutil.which")
     def test_play_success_pygame_fallback(self, mock_which):
         mock_which.return_value = None
 
@@ -48,7 +51,10 @@ class TestSoundPlayer(unittest.TestCase):
             time.sleep(0.1)
             self.assertFalse(player._is_playing)
         finally:
-            os.remove(tmp_path)
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

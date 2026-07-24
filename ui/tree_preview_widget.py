@@ -385,6 +385,17 @@ class TreePreviewWidget(ctk.CTkFrame):
         for root_item in self.tree.get_children():
             recurse(root_item)
 
+    def pause_auto_polling(self):
+        if hasattr(self, "_poll_after_id") and self._poll_after_id:
+            try:
+                self.after_cancel(self._poll_after_id)
+            except Exception:
+                pass
+            self._poll_after_id = None
+
+    def resume_auto_polling(self):
+        self._start_auto_polling()
+
     def _start_auto_polling(self):
         """Starts periodic disk auto-sync every 2000ms."""
         self._auto_poll_disk_changes()
@@ -395,7 +406,7 @@ class TreePreviewWidget(ctk.CTkFrame):
                 self.refresh_tree_live()
             except Exception:
                 pass
-            self.after(2000, self._auto_poll_disk_changes)
+            self._poll_after_id = self.after(2000, self._auto_poll_disk_changes)
 
     def refresh_tree_live(self):
         """

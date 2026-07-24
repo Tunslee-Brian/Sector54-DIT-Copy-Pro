@@ -4,7 +4,7 @@ import json
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Callable, Optional
+from typing import List, Dict, Callable, Optional, Tuple
 from core.token_parser import TokenParser
 from core.directory_builder import DirectoryBuilder
 from core.verify_engine import VerifyEngine

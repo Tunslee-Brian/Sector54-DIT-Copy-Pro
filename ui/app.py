@@ -58,6 +58,7 @@ class DITCopyProApp(ctk.CTk):
         self.current_copy_engine: Optional[CopyEngine] = None
         self.is_copying = False
         self._has_played_sound = False
+        self._tree_debounce_id = None
         self.open_preview_tabs = {}  # filepath -> (tab_title, preview_widget)
 
         self._init_paned_style()
@@ -69,6 +70,8 @@ class DITCopyProApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
     def _on_window_focus_in(self, event=None):
+        if self.is_copying:
+            return
         if hasattr(self, "sidebar"):
             try:
                 self.sidebar.tree_input.refresh_tree_live()
@@ -152,18 +155,6 @@ class DITCopyProApp(ctk.CTk):
         )
         author_link.pack(side="left")
         author_link.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/Tunslee-Brian"))
-
-        # Middle Speed/Status Badge
-        self.lbl_speed_badge = ctk.CTkLabel(
-            header_frame,
-            text=" 0.0 MB/s ",
-            font=(theme.FONT_FAMILY, 12, "bold"),
-            fg_color=theme.ACCENT_PRIMARY,
-            text_color="#FFFFFF",
-            corner_radius=6,
-            height=28
-        )
-        self.lbl_speed_badge.grid(row=0, column=1, sticky="e", padx=(10, 15), pady=10)
 
         # Top Right Actions & Buttons
         actions_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
@@ -419,6 +410,10 @@ class DITCopyProApp(ctk.CTk):
         self.is_copying = True
         self._has_played_sound = False
 
+        if hasattr(self, "sidebar"):
+            for tree in (self.sidebar.tree_input, self.sidebar.tree_output, self.sidebar.tree_drives):
+                tree.pause_auto_polling()
+
         self.btn_start.configure(state="disabled", fg_color=theme.CARD_BG)
         self.btn_verify_only.configure(state="disabled", fg_color=theme.CARD_BG)
         self.btn_cancel.configure(state="normal", fg_color=theme.ACCENT_DANGER, hover_color=theme.ACCENT_DANGER_HOVER, text_color="#ffffff")
@@ -448,6 +443,10 @@ class DITCopyProApp(ctk.CTk):
 
         self.is_copying = True
         self._has_played_sound = False
+
+        if hasattr(self, "sidebar"):
+            for tree in (self.sidebar.tree_input, self.sidebar.tree_output, self.sidebar.tree_drives):
+                tree.pause_auto_polling()
 
         self.btn_start.configure(state="disabled", fg_color=theme.CARD_BG)
         self.btn_verify_only.configure(state="disabled", fg_color=theme.CARD_BG)
@@ -480,36 +479,43 @@ class DITCopyProApp(ctk.CTk):
 
     def _run_session_thread(self, session_type: str = "copy"):
 
+        self._tree_debounce_id = None
+
+        def _debounced_tree_update():
+            self._tree_debounce_id = None
+            if self.current_copy_engine:
+                self.sidebar.update_sidebar_tree_status(
+                    self.current_copy_engine.file_list,
+                    getattr(self.current_copy_engine, "extra_files", []),
+                    expand_output=True
+                )
+
+        def _schedule_tree_update():
+            if self._tree_debounce_id:
+                self.after_cancel(self._tree_debounce_id)
+            self._tree_debounce_id = self.after(400, _debounced_tree_update)
+
         def on_file_start(file_info):
             self.after(0, lambda: self.file_table.update_file_status(file_info))
 
         last_ui_update_time = 0.0
-        last_tree_update_time = 0.0
 
         def on_file_progress(file_info, file_bytes_read, speed, eta):
             nonlocal last_ui_update_time
             now = time.time()
-            if now - last_ui_update_time >= 0.05 or file_bytes_read >= file_info["size"]:
+            if now - last_ui_update_time >= 0.1 or file_bytes_read >= file_info["size"]:
                 last_ui_update_time = now
                 fname = file_info["filename"]
                 fsize = file_info["size"]
-                self.after(0, lambda fn=fname, fr=file_bytes_read, fs=fsize, sp=speed, et=eta: self.progress_panel.update_file_progress(
-                    fn, fr, fs, sp, et
-                ))
-                if hasattr(self, "lbl_speed_badge") and self.lbl_speed_badge:
-                    sp_str = f" {speed / 1024:.2f} GB/s " if speed >= 1024 else f" {speed:.1f} MB/s "
-                    self.after(0, lambda txt=sp_str: self.lbl_speed_badge.configure(text=txt, fg_color=theme.ACCENT_PRIMARY))
-                if self.current_copy_engine:
-                    cb = self.current_copy_engine.copied_bytes
-                    tb = self.current_copy_engine.total_bytes
-                    vc = sum(1 for f in self.current_copy_engine.file_list if f["status"] == "VERIFIED")
-                    tc = len(self.current_copy_engine.file_list)
-                    self.after(0, lambda c_b=cb, t_b=tb, v_c=vc, t_c=tc: self.progress_panel.update_total_progress(
-                        c_b, t_b, v_c, t_c
-                    ))
+                cb = self.current_copy_engine.copied_bytes if self.current_copy_engine else 0
+                tb = self.current_copy_engine.total_bytes if self.current_copy_engine else 0
+                vc = sum(1 for f in self.current_copy_engine.file_list if f["status"] == "VERIFIED") if self.current_copy_engine else 0
+                tc = len(self.current_copy_engine.file_list) if self.current_copy_engine else 0
+                self.after(0, lambda fn=fname, fr=file_bytes_read, fs=fsize, sp=speed, et=eta,
+                          c_b=cb, t_b=tb, v_c=vc, t_c=tc:
+                    self.progress_panel.update_both(fn, fr, fs, sp, et, c_b, t_b, v_c, t_c))
 
         def on_file_complete(file_info):
-            nonlocal last_tree_update_time
             self.after(0, lambda: self.file_table.update_file_status(file_info))
             if self.current_copy_engine:
                 self.after(0, lambda: self.progress_panel.update_total_progress(
@@ -518,14 +524,7 @@ class DITCopyProApp(ctk.CTk):
                     sum(1 for f in self.current_copy_engine.file_list if f["status"] == "VERIFIED"),
                     len(self.current_copy_engine.file_list)
                 ))
-                now = time.time()
-                if now - last_tree_update_time >= 0.3:
-                    last_tree_update_time = now
-                    self.after(0, lambda: self.sidebar.update_sidebar_tree_status(
-                        self.current_copy_engine.file_list,
-                        getattr(self.current_copy_engine, "extra_files", []),
-                        expand_output=True
-                    ))
+                self.after(0, _schedule_tree_update)
 
         def on_session_complete(summary):
             self.after(0, lambda: self._handle_session_complete(summary))
@@ -549,6 +548,9 @@ class DITCopyProApp(ctk.CTk):
 
     def _handle_session_complete(self, summary: dict):
         self.is_copying = False
+        if hasattr(self, "sidebar"):
+            for tree in (self.sidebar.tree_input, self.sidebar.tree_output, self.sidebar.tree_drives):
+                tree.resume_auto_polling()
         self.btn_start.configure(state="normal", fg_color=theme.ACCENT_PRIMARY)
         self.btn_verify_only.configure(state="normal", fg_color=theme.ACCENT_VERIFY)
         self.btn_cancel.configure(state="disabled", fg_color=theme.CARD_BG, text_color=theme.TEXT_MUTED)
@@ -648,17 +650,16 @@ class DITCopyProApp(ctk.CTk):
         # Reset Engine state
         self.current_copy_engine = None
         self._has_played_sound = False
+        if self._tree_debounce_id:
+            try:
+                self.after_cancel(self._tree_debounce_id)
+            except Exception:
+                pass
+            self._tree_debounce_id = None
 
     def _show_feedback(self, message: str, color: str = None):
-        """Show a temporary feedback message if speed badge exists."""
-        if hasattr(self, "lbl_speed_badge") and self.lbl_speed_badge:
-            if not color:
-                color = theme.ACCENT_WARNING
-            self.lbl_speed_badge.configure(text=f" {message} ", fg_color=color)
-            self.after(3000, lambda: self.lbl_speed_badge.configure(
-                text=" 0.0 MB/s ",
-                fg_color=theme.ACCENT_PRIMARY
-            ))
+        """Show a temporary feedback message."""
+        print(f"[Feedback] {message}")
 
     def _on_closing(self):
         """Handle window close event - warn if copying in progress."""

@@ -9,7 +9,10 @@ import tkinter as tk
 from tkinter import ttk
 import customtkinter as ctk
 from PIL import Image, ImageTk
-# pygame is imported dynamically to avoid hard dependency on startup
+try:
+    import pygame
+except ImportError:
+    pygame = None
 
 import ui.theme as theme
 
@@ -438,9 +441,8 @@ class MediaPreviewWidget(ctk.CTkFrame):
 
     def _has_mixer(self) -> bool:
         try:
-            import pygame.mixer
-            return pygame.mixer is not None and hasattr(pygame.mixer, "get_init")
-        except (ImportError, AttributeError, Exception):
+            return pygame is not None and hasattr(pygame.mixer, "get_init")
+        except (AttributeError, Exception):
             return False
 
     def _init_audio_duration(self):
